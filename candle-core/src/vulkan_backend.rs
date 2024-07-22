@@ -3,25 +3,58 @@ use crate::cpu_backend::CpuStorage;
 use crate::error::Result;
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::Layout;
+use std::sync::Arc;
+use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
+use vulkano::{Validated, VulkanLibrary};
+
+/// Vulkan related errors
+#[derive(thiserror::Error, Debug)]
+pub enum VulkanError {
+    #[error("{0}")]
+    Message(String),
+    #[error(transparent)]
+    LoadingError(#[from] vulkano::LoadingError),
+
+    #[error("{0:?}")]
+    VulkanError(Validated<vulkano::VulkanError>),
+}
+
+impl From<String> for VulkanError {
+    fn from(e: String) -> Self {
+        VulkanError::Message(e)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct VulkanDevice {
-    // Add fields as necessary
+    instance: Arc<Instance>,
+    gpu_id: usize,
 }
 
 impl BackendDevice for VulkanDevice {
     type Storage = VulkanStorage;
 
-    fn new(_size: usize) -> Result<Self> {
-        // Initialize Vulkan device
+    fn new(ordinal: usize) -> Result<Self> {
+        let library = VulkanLibrary::new().map_err(VulkanError::LoadingError)?;
+        let instance = Instance::new(
+            library,
+            InstanceCreateInfo {
+                flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
+                ..Default::default()
+            },
+        ).map_err(VulkanError::VulkanError)?;
+
         Ok(VulkanDevice {
-            // Initialize fields
+            instance,
+            gpu_id: ordinal,
         })
     }
 
     fn location(&self) -> crate::DeviceLocation {
         // Return device location
-        crate::DeviceLocation::Vulkan { gpu_id: 0 }
+        crate::DeviceLocation::Vulkan {
+            gpu_id: self.gpu_id,
+        }
     }
 
     fn same_device(&self, _other: &Self) -> bool {
@@ -31,12 +64,12 @@ impl BackendDevice for VulkanDevice {
 
     fn zeros_impl(&self, _shape: &crate::Shape, _dtype: crate::DType) -> Result<Self::Storage> {
         // Implement zeros initialization
-        Ok(VulkanStorage {})
+        Ok(VulkanStorage::new(self.clone()))
     }
 
     fn ones_impl(&self, _shape: &crate::Shape, _dtype: crate::DType) -> Result<Self::Storage> {
         // Implement ones initialization
-        Ok(VulkanStorage {})
+        Ok(VulkanStorage::new(self.clone()))
     }
 
     unsafe fn alloc_uninit(
@@ -45,17 +78,17 @@ impl BackendDevice for VulkanDevice {
         _dtype: crate::DType,
     ) -> Result<Self::Storage> {
         // Implement uninitialized allocation
-        Ok(VulkanStorage {})
+        Ok(VulkanStorage::new(self.clone()))
     }
 
     fn storage_from_cpu_storage(&self, _cpu_storage: &CpuStorage) -> Result<Self::Storage> {
         // Implement storage conversion from CPU
-        Ok(VulkanStorage {})
+        Ok(VulkanStorage::new(self.clone()))
     }
 
     fn storage_from_cpu_storage_owned(&self, _cpu_storage: CpuStorage) -> Result<Self::Storage> {
         // Implement storage conversion from owned CPU storage
-        Ok(VulkanStorage {})
+        Ok(VulkanStorage::new(self.clone()))
     }
 
     fn rand_uniform(
@@ -66,7 +99,7 @@ impl BackendDevice for VulkanDevice {
         _high: f64,
     ) -> Result<Self::Storage> {
         // Implement random uniform initialization
-        Ok(VulkanStorage {})
+        Ok(VulkanStorage::new(self.clone()))
     }
 
     fn rand_normal(
@@ -77,7 +110,7 @@ impl BackendDevice for VulkanDevice {
         _std: f64,
     ) -> Result<Self::Storage> {
         // Implement random normal initialization
-        Ok(VulkanStorage {})
+        Ok(VulkanStorage::new(self.clone()))
     }
 
     fn set_seed(&self, _seed: u64) -> Result<()> {
@@ -86,8 +119,10 @@ impl BackendDevice for VulkanDevice {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct VulkanStorage {
-    // Add fields as necessary
+    /// a reference to the device owning this buffer
+    device: VulkanDevice,
 }
 
 impl BackendStorage for VulkanStorage {
@@ -95,7 +130,7 @@ impl BackendStorage for VulkanStorage {
 
     fn try_clone(&self, _layout: &crate::Layout) -> crate::Result<Self> {
         // Implement clone
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn dtype(&self) -> crate::DType {
@@ -104,8 +139,7 @@ impl BackendStorage for VulkanStorage {
     }
 
     fn device(&self) -> &Self::Device {
-        // Return device
-        &VulkanDevice {}
+        &self.device
     }
 
     fn to_cpu_storage(&self) -> crate::Result<CpuStorage> {
@@ -115,17 +149,17 @@ impl BackendStorage for VulkanStorage {
 
     fn affine(&self, _layout: &crate::Layout, _scale: f64, _bias: f64) -> crate::Result<Self> {
         // Implement affine transformation
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn powf(&self, _layout: &crate::Layout, _exp: f64) -> crate::Result<Self> {
         // Implement power function
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn elu(&self, _layout: &crate::Layout, _alpha: f64) -> crate::Result<Self> {
         // Implement ELU function
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn reduce_op(
@@ -135,7 +169,7 @@ impl BackendStorage for VulkanStorage {
         _axes: &[usize],
     ) -> crate::Result<Self> {
         // Implement reduction operation
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn cmp(
@@ -146,17 +180,17 @@ impl BackendStorage for VulkanStorage {
         _rhs_layout: &crate::Layout,
     ) -> crate::Result<Self> {
         // Implement comparison
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn to_dtype(&self, _layout: &crate::Layout, _dtype: crate::DType) -> crate::Result<Self> {
         // Implement conversion to data type
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn unary_impl<B: UnaryOpT>(&self, _layout: &crate::Layout) -> crate::Result<Self> {
         // Implement unary operation
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn binary_impl<B: BinaryOpT>(
@@ -166,7 +200,7 @@ impl BackendStorage for VulkanStorage {
         _rhs_layout: &crate::Layout,
     ) -> crate::Result<Self> {
         // Implement binary operation
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn where_cond(
@@ -178,7 +212,7 @@ impl BackendStorage for VulkanStorage {
         _y_layout: &crate::Layout,
     ) -> crate::Result<Self> {
         // Implement where condition
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn conv1d(
@@ -189,7 +223,7 @@ impl BackendStorage for VulkanStorage {
         _params: &crate::conv::ParamsConv1D,
     ) -> crate::Result<Self> {
         // Implement 1D convolution
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn conv_transpose1d(
@@ -200,7 +234,7 @@ impl BackendStorage for VulkanStorage {
         _params: &crate::conv::ParamsConvTranspose1D,
     ) -> crate::Result<Self> {
         // Implement 1D transposed convolution
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn conv2d(
@@ -211,7 +245,7 @@ impl BackendStorage for VulkanStorage {
         _params: &crate::conv::ParamsConv2D,
     ) -> crate::Result<Self> {
         // Implement 2D convolution
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn conv_transpose2d(
@@ -222,7 +256,7 @@ impl BackendStorage for VulkanStorage {
         _params: &crate::conv::ParamsConvTranspose2D,
     ) -> crate::Result<Self> {
         // Implement 2D transposed convolution
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn avg_pool2d(
@@ -232,7 +266,7 @@ impl BackendStorage for VulkanStorage {
         _stride: (usize, usize),
     ) -> crate::Result<Self> {
         // Implement 2D average pooling
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn max_pool2d(
@@ -242,12 +276,12 @@ impl BackendStorage for VulkanStorage {
         _stride: (usize, usize),
     ) -> crate::Result<Self> {
         // Implement 2D max pooling
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn upsample_nearest1d(&self, _layout: &crate::Layout, _scale: usize) -> crate::Result<Self> {
         // Implement 1D nearest upsampling
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn upsample_nearest2d(
@@ -257,7 +291,7 @@ impl BackendStorage for VulkanStorage {
         _scale_w: usize,
     ) -> crate::Result<Self> {
         // Implement 2D nearest upsampling
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn gather(
@@ -268,7 +302,7 @@ impl BackendStorage for VulkanStorage {
         _axis: usize,
     ) -> crate::Result<Self> {
         // Implement gather
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn scatter_add(
@@ -281,7 +315,7 @@ impl BackendStorage for VulkanStorage {
         _axis: usize,
     ) -> crate::Result<Self> {
         // Implement scatter add
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn index_add(
@@ -294,7 +328,7 @@ impl BackendStorage for VulkanStorage {
         _axis: usize,
     ) -> crate::Result<Self> {
         // Implement index add
-        Ok(VulkanStorage {})
+        Ok(self.clone())
     }
 
     fn copy2d(
@@ -327,5 +361,11 @@ impl BackendStorage for VulkanStorage {
 
     fn copy_strided_src(&self, _: &mut Self, _: usize, _: &Layout) -> crate::Result<()> {
         unimplemented!()
+    }
+}
+
+impl VulkanStorage {
+    pub fn new(device: VulkanDevice) -> Self {
+        Self { device }
     }
 }
