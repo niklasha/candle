@@ -63,6 +63,7 @@ pub mod display;
 mod dtype;
 pub mod dummy_cuda_backend;
 mod dummy_metal_backend;
+mod dummy_vulkan_backend;
 pub mod error;
 mod indexer;
 pub mod layout;
@@ -86,6 +87,8 @@ mod tensor_cat;
 pub mod test_utils;
 pub mod utils;
 mod variable;
+#[cfg(feature = "vulkan")]
+pub mod vulkan_backend;
 
 #[cfg(feature = "cudnn")]
 pub use cuda_backend::cudnn;
@@ -123,6 +126,12 @@ extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
+
+#[cfg(feature = "vulkan")]
+pub use vulkan_backend::{VulkanDevice, VulkanError, VulkanStorage};
+
+#[cfg(not(feature = "vulkan"))]
+pub use dummy_vulkan_backend::{VulkanDevice, VulkanError, VulkanStorage};
 
 pub trait ToUsize2 {
     fn to_usize2(self) -> (usize, usize);
@@ -171,8 +180,3 @@ impl<M: Module> ModuleT for M {
         self.forward(xs)
     }
 }
-
-// Add the new Vulkan backend module
-pub mod vulkan_backend;
-
-pub use vulkan_backend::{VulkanDevice, VulkanStorage};

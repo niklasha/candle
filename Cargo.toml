@@ -15,6 +15,7 @@ exclude = [
    "candle-flash-attn",
    "candle-kernels",
    "candle-metal-kernels",
+   "candle-vulkan-kernels",
    "candle-onnx",
 ]
 resolver = "2"
@@ -41,6 +42,7 @@ candle-metal-kernels = { path = "./candle-metal-kernels", version = "0.8.2" }
 candle-nn = { path = "./candle-nn", version = "0.8.2" }
 candle-onnx = { path = "./candle-onnx", version = "0.8.2" }
 candle-transformers = { path = "./candle-transformers", version = "0.8.2" }
+candle-vulkan-kernels = { path = "./candle-vulkan-kernels", version = "0.8.2" }
 clap = { version = "4.2.4", features = ["derive"] }
 criterion = { version = "0.5.1", default-features=false }
 cudarc = { version = "0.13.0", features = ["std", "cublas", "cublaslt", "curand", "driver", "nvrtc", "f16", "cuda-version-from-build-system", "dynamic-linking"], default-features=false }
@@ -76,6 +78,7 @@ ug-metal = "0.1.0"
 yoke = { version = "0.7.2", features = ["derive"] }
 zip = { version = "1.1.1", default-features = false }
 metal = { version = "0.27.0", features = ["mps"]}
+vulkano = "0.34.1"
 
 [profile.release-with-debug]
 inherits = "release"

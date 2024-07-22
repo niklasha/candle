@@ -162,7 +162,7 @@ impl Device {
             Self::Cpu => CpuDevice.set_seed(seed),
             Self::Cuda(c) => c.set_seed(seed),
             Self::Metal(m) => m.set_seed(seed),
-            Self::Vulkan(_) => todo!()
+            Self::Vulkan(_) => todo!(),
         }
     }
 
@@ -180,7 +180,7 @@ impl Device {
             Self::Cpu => DeviceLocation::Cpu,
             Self::Cuda(device) => device.location(),
             Device::Metal(device) => device.location(),
-            Self::Vulkan(_) => todo!()
+            Self::Vulkan(_) => todo!(),
         }
     }
 
@@ -246,7 +246,7 @@ impl Device {
                 let storage = device.rand_uniform(shape, dtype, lo, up)?;
                 Ok(Storage::Metal(storage))
             }
-            Device::Vulkan(_) => todo!()
+            Device::Vulkan(_) => todo!(),
         }
     }
 
@@ -285,7 +285,7 @@ impl Device {
                 let storage = device.rand_normal(shape, dtype, mean, std)?;
                 Ok(Storage::Metal(storage))
             }
-            Device::Vulkan(_) => todo!()
+            Device::Vulkan(_) => todo!(),
         }
     }
 
@@ -312,7 +312,7 @@ impl Device {
                 let storage = device.ones_impl(shape, dtype)?;
                 Ok(Storage::Metal(storage))
             }
-            Device::Vulkan(_) => todo!()
+            Device::Vulkan(_) => todo!(),
         }
     }
 
@@ -330,7 +330,7 @@ impl Device {
                 let storage = device.zeros_impl(shape, dtype)?;
                 Ok(Storage::Metal(storage))
             }
-            Device::Vulkan(_) => todo!()
+            Device::Vulkan(_) => todo!(),
         }
     }
 
@@ -348,7 +348,7 @@ impl Device {
                 let storage = device.alloc_uninit(shape, dtype)?;
                 Ok(Storage::Metal(storage))
             }
-            Device::Vulkan(_) => todo!()
+            Device::Vulkan(_) => todo!(),
         }
     }
 
@@ -379,8 +379,7 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Metal(storage))
             }
-            Device::Vulkan(_) => todo!()
-
+            Device::Vulkan(_) => todo!(),
         }
     }
 
@@ -397,7 +396,7 @@ impl Device {
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
                 Ok(Storage::Metal(storage))
             }
-            Device::Vulkan(_) => todo!()
+            Device::Vulkan(_) => todo!(),
         }
     }
 
