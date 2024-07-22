@@ -77,6 +77,7 @@ enum PyDevice {
     Cpu,
     Cuda,
     Metal,
+    Vulkan,
 }
 
 impl PyDevice {
@@ -85,6 +86,7 @@ impl PyDevice {
             Device::Cpu => Self::Cpu,
             Device::Cuda(_) => Self::Cuda,
             Device::Metal(_) => Self::Metal,
+            Device::Vulkan(_) => Self::Vulkan,
         }
     }
 

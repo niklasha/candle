@@ -4,8 +4,13 @@ use crate::error::Result;
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::Layout;
 use std::sync::Arc;
-use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
-use vulkano::{Validated, VulkanLibrary};
+use vulkano::{
+    device::{
+        physical::PhysicalDevice, Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo,
+    },
+    instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
+    Validated, VulkanLibrary,
+};
 
 /// Vulkan related errors
 #[derive(thiserror::Error, Debug)]
@@ -16,7 +21,10 @@ pub enum VulkanError {
     LoadingError(#[from] vulkano::LoadingError),
 
     #[error("{0:?}")]
-    VulkanError(Validated<vulkano::VulkanError>),
+    ValidatedVulkanError(Validated<vulkano::VulkanError>),
+
+    #[error("{0:?}")]
+    VulkanError(vulkano::VulkanError),
 }
 
 impl From<String> for VulkanError {
@@ -29,12 +37,32 @@ impl From<String> for VulkanError {
 pub struct VulkanDevice {
     instance: Arc<Instance>,
     gpu_id: usize,
+    physical_device: Arc<PhysicalDevice>,
+    device: Arc<Device>,
+    queue: Arc<vulkano::device::Queue>,
+}
+
+impl VulkanDevice {
+    fn select_physical_device(
+        instance: &Arc<Instance>,
+        gpu_id: usize,
+    ) -> Result<Arc<PhysicalDevice>> {
+        let physical_devices = instance
+            .enumerate_physical_devices()
+            .map_err(VulkanError::VulkanError)?;
+        let physical = physical_devices
+            .into_iter()
+            .nth(gpu_id)
+            .ok_or(VulkanError::Message(String::from("ordinal out of range")))?;
+        Ok(physical)
+    }
 }
 
 impl BackendDevice for VulkanDevice {
     type Storage = VulkanStorage;
 
     fn new(ordinal: usize) -> Result<Self> {
+        // Create a Vulkan instance
         let library = VulkanLibrary::new().map_err(VulkanError::LoadingError)?;
         let instance = Instance::new(
             library,
@@ -42,11 +70,37 @@ impl BackendDevice for VulkanDevice {
                 flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
                 ..Default::default()
             },
-        ).map_err(VulkanError::VulkanError)?;
+        )
+        .map_err(VulkanError::ValidatedVulkanError)?;
+
+        // Select the physical device
+        let physical_device = Self::select_physical_device(&instance, ordinal)?;
+
+        // Initialize Vulkan resources (queues, command buffers, etc.)
+        let device_extensions = DeviceExtensions {
+            khr_storage_buffer_storage_class: true,
+            ..DeviceExtensions::empty()
+        };
+        let (device, mut queues) = Device::new(
+            physical_device.clone(),
+            DeviceCreateInfo {
+                enabled_extensions: device_extensions,
+                queue_create_infos: vec![QueueCreateInfo {
+                    queue_family_index: 0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )
+        .map_err(VulkanError::ValidatedVulkanError)?;
+        let queue = queues.next().unwrap();
 
         Ok(VulkanDevice {
             instance,
             gpu_id: ordinal,
+            physical_device,
+            device,
+            queue,
         })
     }
 
@@ -119,9 +173,8 @@ impl BackendDevice for VulkanDevice {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct VulkanStorage {
-    /// a reference to the device owning this buffer
     device: VulkanDevice,
 }
 
@@ -139,6 +192,7 @@ impl BackendStorage for VulkanStorage {
     }
 
     fn device(&self) -> &Self::Device {
+        // Return device
         &self.device
     }
 
