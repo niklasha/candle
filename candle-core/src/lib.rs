@@ -171,3 +171,8 @@ impl<M: Module> ModuleT for M {
         self.forward(xs)
     }
 }
+
+// Add the new Vulkan backend module
+pub mod vulkan_backend;
+
+pub use vulkan_backend::{VulkanDevice, VulkanStorage};
