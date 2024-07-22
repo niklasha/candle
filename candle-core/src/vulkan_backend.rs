@@ -423,3 +423,43 @@ impl VulkanStorage {
         Self { device }
     }
 }
+// Additional Vulkan Functionality
+impl VulkanDevice {
+    pub fn create_command_buffer(
+        &self,
+    ) -> Result<Arc<vulkano::command_buffer::PrimaryAutoCommandBuffer>> {
+        use vulkano::command_buffer::allocator::{
+            StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
+        };
+        use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
+
+        let queue_family = self.queue.queue_family_index();
+        let allocator_create_info = StandardCommandBufferAllocatorCreateInfo::default();
+        let allocator =
+            StandardCommandBufferAllocator::new(self.device.clone(), allocator_create_info);
+        let builder = AutoCommandBufferBuilder::primary(
+            &allocator,
+            queue_family,
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .map_err(VulkanError::ValidatedVulkanError)?;
+
+        let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
+        Ok(command_buffer)
+    }
+
+    pub fn allocate_memory(&self, size: u64) -> Result<vulkano::memory::DeviceMemory> {
+        use vulkano::memory::{DeviceMemory, MemoryAllocateInfo};
+
+        let allocate_info = MemoryAllocateInfo {
+            allocation_size: size,
+            memory_type_index: 0,
+            ..Default::default()
+        };
+
+        let memory = DeviceMemory::allocate(self.device.clone(), allocate_info)
+            .map_err(VulkanError::ValidatedVulkanError)?;
+
+        Ok(memory)
+    }
+}
