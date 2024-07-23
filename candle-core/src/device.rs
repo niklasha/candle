@@ -157,6 +157,10 @@ impl Device {
         Ok(Self::Metal(crate::MetalDevice::new(ordinal)?))
     }
 
+    pub fn new_vulkan(ordinal: usize) -> Result<Self> {
+        Ok(Self::Vulkan(crate::VulkanDevice::new(ordinal)?))
+    }
+
     pub fn set_seed(&self, seed: u64) -> Result<()> {
         match self {
             Self::Cpu => CpuDevice.set_seed(seed),
