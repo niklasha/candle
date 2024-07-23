@@ -241,4 +241,12 @@ impl crate::backend::BackendDevice for VulkanDevice {
     fn rand_normal(&self, _: &Shape, _: DType, _: f64, _: f64) -> Result<Self::Storage> {
         Err(Error::NotCompiledWithVulkanSupport)
     }
+
+    fn storage_from_slice<T: crate::WithDType>(&self, _: &[T]) -> Result<Self::Storage> {
+        Err(Error::NotCompiledWithVulkanSupport)
+    }
+
+    fn synchronize(&self) -> Result<()> {
+        Err(Error::NotCompiledWithVulkanSupport)
+    }
 }
