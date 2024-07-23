@@ -35,9 +35,7 @@ impl From<String> for VulkanError {
 
 #[derive(Clone, Debug)]
 pub struct VulkanDevice {
-    instance: Arc<Instance>,
     gpu_id: usize,
-    physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
     queue: Arc<vulkano::device::Queue>,
 }
@@ -55,6 +53,44 @@ impl VulkanDevice {
             .nth(gpu_id)
             .ok_or(VulkanError::Message(String::from("ordinal out of range")))?;
         Ok(physical)
+    }
+
+    pub fn create_command_buffer(
+        &self,
+    ) -> Result<Arc<vulkano::command_buffer::PrimaryAutoCommandBuffer>> {
+        use vulkano::command_buffer::allocator::{
+            StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
+        };
+        use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
+
+        let queue_family = self.queue.queue_family_index();
+        let allocator_create_info = StandardCommandBufferAllocatorCreateInfo::default();
+        let allocator =
+            StandardCommandBufferAllocator::new(self.device.clone(), allocator_create_info);
+        let builder = AutoCommandBufferBuilder::primary(
+            &allocator,
+            queue_family,
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .map_err(VulkanError::ValidatedVulkanError)?;
+
+        let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
+        Ok(command_buffer)
+    }
+
+    pub fn allocate_memory(&self, size: u64) -> Result<vulkano::memory::DeviceMemory> {
+        use vulkano::memory::{DeviceMemory, MemoryAllocateInfo};
+
+        let allocate_info = MemoryAllocateInfo {
+            allocation_size: size,
+            memory_type_index: 0,
+            ..Default::default()
+        };
+
+        let memory = DeviceMemory::allocate(self.device.clone(), allocate_info)
+            .map_err(VulkanError::ValidatedVulkanError)?;
+
+        Ok(memory)
     }
 }
 
@@ -96,9 +132,7 @@ impl BackendDevice for VulkanDevice {
         let queue = queues.next().unwrap();
 
         Ok(VulkanDevice {
-            instance,
             gpu_id: ordinal,
-            physical_device,
             device,
             queue,
         })
@@ -176,6 +210,12 @@ impl BackendDevice for VulkanDevice {
 #[derive(Clone)]
 pub struct VulkanStorage {
     device: VulkanDevice,
+}
+
+impl VulkanStorage {
+    pub fn new(device: VulkanDevice) -> Self {
+        Self { device }
+    }
 }
 
 impl BackendStorage for VulkanStorage {
@@ -415,51 +455,5 @@ impl BackendStorage for VulkanStorage {
 
     fn copy_strided_src(&self, _: &mut Self, _: usize, _: &Layout) -> crate::Result<()> {
         unimplemented!()
-    }
-}
-
-impl VulkanStorage {
-    pub fn new(device: VulkanDevice) -> Self {
-        Self { device }
-    }
-}
-// Additional Vulkan Functionality
-impl VulkanDevice {
-    pub fn create_command_buffer(
-        &self,
-    ) -> Result<Arc<vulkano::command_buffer::PrimaryAutoCommandBuffer>> {
-        use vulkano::command_buffer::allocator::{
-            StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
-        };
-        use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
-
-        let queue_family = self.queue.queue_family_index();
-        let allocator_create_info = StandardCommandBufferAllocatorCreateInfo::default();
-        let allocator =
-            StandardCommandBufferAllocator::new(self.device.clone(), allocator_create_info);
-        let builder = AutoCommandBufferBuilder::primary(
-            &allocator,
-            queue_family,
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .map_err(VulkanError::ValidatedVulkanError)?;
-
-        let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
-        Ok(command_buffer)
-    }
-
-    pub fn allocate_memory(&self, size: u64) -> Result<vulkano::memory::DeviceMemory> {
-        use vulkano::memory::{DeviceMemory, MemoryAllocateInfo};
-
-        let allocate_info = MemoryAllocateInfo {
-            allocation_size: size,
-            memory_type_index: 0,
-            ..Default::default()
-        };
-
-        let memory = DeviceMemory::allocate(self.device.clone(), allocate_info)
-            .map_err(VulkanError::ValidatedVulkanError)?;
-
-        Ok(memory)
     }
 }
