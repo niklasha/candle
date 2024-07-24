@@ -4,9 +4,7 @@ use crate::error::Result;
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::Layout;
 use vulkano::{
-    device::{
-        Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo,
-    },
+    device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     Validated, VulkanLibrary,
 };
