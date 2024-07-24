@@ -1485,10 +1485,28 @@ test_device!(zeros, zeros_cpu, zeros_gpu, zeros_metal, zeros_vulkan);
 test_device!(ones, ones_cpu, ones_gpu, ones_metal, ones_vulkan);
 test_device!(full, full_cpu, full_gpu, full_metal, full_vulkan);
 test_device!(arange, arange_cpu, arange_gpu, arange_metal, arange_vulkan);
-test_device!(add_mul, add_mul_cpu, add_mul_gpu, add_mul_metal, add_mul_vulkan);
-test_device!(tensor_2d, tensor_2d_cpu, tensor_2d_gpu, tensor_2d_metal, tensor_2d_vulkan);
+test_device!(
+    add_mul,
+    add_mul_cpu,
+    add_mul_gpu,
+    add_mul_metal,
+    add_mul_vulkan
+);
+test_device!(
+    tensor_2d,
+    tensor_2d_cpu,
+    tensor_2d_gpu,
+    tensor_2d_metal,
+    tensor_2d_vulkan
+);
 test_device!(narrow, narrow_cpu, narrow_gpu, narrow_metal, narrow_vulkan);
-test_device!(broadcast, broadcast_cpu, broadcast_gpu, broadcast_metal, broadcast_vulkan);
+test_device!(
+    broadcast,
+    broadcast_cpu,
+    broadcast_gpu,
+    broadcast_metal,
+    broadcast_vulkan
+);
 test_device!(slice_set, ss_cpu, ss_gpu, ss_metal, ss_vulkan);
 test_device!(cat, cat_cpu, cat_gpu, cat_metal, cat_vulkan);
 test_device!(sum, sum_cpu, sum_gpu, sum_metal, sum_vulkan);
@@ -1496,10 +1514,34 @@ test_device!(min, min_cpu, min_gpu, min_metal, min_vulkan);
 test_device!(max, max_cpu, max_gpu, max_metal, max_vulkan);
 test_device!(argmax, argmax_cpu, argmax_gpu, argmax_metal, argmax_vulkan);
 test_device!(argmin, argmin_cpu, argmin_gpu, argmin_metal, argmin_vulkan);
-test_device!(transpose, transpose_cpu, transpose_gpu, transpose_metal, transpose_vulkan);
-test_device!(unary_op, unary_op_cpu, unary_op_gpu, unary_op_metal, unary_op_vulkan);
-test_device!(binary_op, binary_op_cpu, binary_op_gpu, binary_op_metal, binary_op_vulkan);
-test_device!(embeddings, embeddings_cpu, embeddings_gpu, embeddings_metal, embeddings_vulkan);
+test_device!(
+    transpose,
+    transpose_cpu,
+    transpose_gpu,
+    transpose_metal,
+    transpose_vulkan
+);
+test_device!(
+    unary_op,
+    unary_op_cpu,
+    unary_op_gpu,
+    unary_op_metal,
+    unary_op_vulkan
+);
+test_device!(
+    binary_op,
+    binary_op_cpu,
+    binary_op_gpu,
+    binary_op_metal,
+    binary_op_vulkan
+);
+test_device!(
+    embeddings,
+    embeddings_cpu,
+    embeddings_gpu,
+    embeddings_metal,
+    embeddings_vulkan
+);
 test_device!(cmp, cmp_cpu, cmp_gpu, cmp_metal, cmp_vulkan);
 test_device!(
     broadcasting,
@@ -1515,7 +1557,13 @@ test_device!(
     index_select_metal,
     index_select_vulkan
 );
-test_device!(index_add, index_add_cpu, index_add_gpu, index_add_metal, index_add_vulkan);
+test_device!(
+    index_add,
+    index_add_cpu,
+    index_add_gpu,
+    index_add_metal,
+    index_add_vulkan
+);
 test_device!(gather, gather_cpu, gather_gpu, gather_metal, gather_vulkan);
 test_device!(
     scatter_add,
@@ -1535,7 +1583,13 @@ test_device!(randn, randn_cpu, randn_gpu, randn_metal, randn_vulkan);
 test_device!(clamp, clamp_cpu, clamp_gpu, clamp_metal, clamp_vulkan);
 test_device!(asort, asort_cpu, asort_gpu, asort_metal, asort_vulkan);
 test_device!(var, var_cpu, var_gpu, var_metal, var_vulkan);
-test_device!(zero_dim, zero_dim_cpu, zero_dim_gpu, zero_dim_metal, zero_dim_vulkan);
+test_device!(
+    zero_dim,
+    zero_dim_cpu,
+    zero_dim_gpu,
+    zero_dim_metal,
+    zero_dim_vulkan
+);
 
 // There was originally a bug on the CPU implementation for randn
 // https://github.com/huggingface/candle/issues/381
