@@ -2,8 +2,10 @@ use crate::backend::{BackendDevice, BackendStorage};
 use crate::cpu_backend::CpuStorage;
 use crate::error::Result;
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::Layout;
+use crate::{DType, Layout};
+use std::sync::Arc;
 use vulkano::{
+    buffer::Subbuffer,
     device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     Validated, VulkanLibrary,
@@ -25,6 +27,15 @@ pub enum VulkanError {
 
     #[error("{0:?}")]
     VulkanError(vulkano::VulkanError),
+
+    #[error("{0:?}")]
+    ValidatedAllocateBufferError(Validated<vulkano::buffer::AllocateBufferError>),
+
+    #[error("{0:?}")]
+    ValidationError(Box<vulkano::ValidationError>),
+
+    #[error("{0:?}")]
+    CommandBufferExecError(vulkano::command_buffer::CommandBufferExecError),
 }
 
 impl From<String> for VulkanError {
@@ -35,12 +46,25 @@ impl From<String> for VulkanError {
 
 #[derive(Clone, Debug)]
 pub struct VulkanStorage {
+    buffer: Arc<Subbuffer<[u8]>>,
     device: VulkanDevice,
+    count: usize,
+    dtype: DType,
 }
 
 impl VulkanStorage {
-    pub fn new(device: VulkanDevice) -> Self {
-        Self { device }
+    pub fn new(
+        buffer: Arc<Subbuffer<[u8]>>,
+        device: VulkanDevice,
+        count: usize,
+        dtype: DType,
+    ) -> Self {
+        Self {
+            buffer,
+            device,
+            count,
+            dtype,
+        }
     }
 }
 
@@ -339,9 +363,15 @@ impl BackendDevice for VulkanDevice {
         todo!()
     }
 
-    fn zeros_impl(&self, _shape: &crate::Shape, _dtype: crate::DType) -> Result<Self::Storage> {
-        // Implement zeros initialization
-        todo!()
+    fn zeros_impl(&self, shape: &crate::Shape, dtype: crate::DType) -> Result<Self::Storage> {
+        let size = shape.elem_count() * dtype.size_in_bytes();
+        let buffer = self.allocate_buffer(size)?;
+        Ok(VulkanStorage::new(
+            buffer,
+            self.clone(),
+            shape.elem_count(),
+            dtype,
+        ))
     }
 
     fn ones_impl(&self, _shape: &crate::Shape, _dtype: crate::DType) -> Result<Self::Storage> {
