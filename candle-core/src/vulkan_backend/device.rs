@@ -69,9 +69,7 @@ impl VulkanDevice {
         )
         .map_err(VulkanError::ValidatedVulkanError)?;
 
-        let command_buffer = builder
-            .build()
-            .map_err(VulkanError::ValidatedVulkanError)?;
+        let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
         Ok(command_buffer)
     }
 

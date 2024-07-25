@@ -232,7 +232,13 @@ fn qmm_batch(dev: &Device) -> Result<()> {
 }
 
 test_device!(quantized_matmul, qmm_cpu, qmm_cuda, qmm_metal, qmm_vulkan);
-test_device!(quantized_matmul_neg, qmm_n_cpu, qmm_n_cuda, qmm_n_metal, qmm_n_vulkan);
+test_device!(
+    quantized_matmul_neg,
+    qmm_n_cpu,
+    qmm_n_cuda,
+    qmm_n_metal,
+    qmm_n_vulkan
+);
 test_device!(qmm_batch, qmm_b_cpu, qmm_b_cuda, qmm_b_metal, qmm_b_vulkan);
 
 fn quantize_q4_0(device: &Device) -> Result<()> {
@@ -929,7 +935,13 @@ macro_rules! quantized_matmul {
             Ok(())
         }
 
-        test_device!($fn_name, $fn_name_cpu, $fn_name_cuda, $fn_name_metal, $fn_name_vulkan);
+        test_device!(
+            $fn_name,
+            $fn_name_cpu,
+            $fn_name_cuda,
+            $fn_name_metal,
+            $fn_name_vulkan
+        );
     };
 }
 
