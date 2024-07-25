@@ -5,7 +5,7 @@ use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{DType, Layout};
 use std::sync::Arc;
 use vulkano::{
-    buffer::Subbuffer,
+    buffer::Buffer,
     device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     Validated, VulkanLibrary,
@@ -46,19 +46,14 @@ impl From<String> for VulkanError {
 
 #[derive(Clone, Debug)]
 pub struct VulkanStorage {
-    buffer: Arc<Subbuffer<[u8]>>,
+    buffer: Arc<Buffer>,
     device: VulkanDevice,
     count: usize,
     dtype: DType,
 }
 
 impl VulkanStorage {
-    pub fn new(
-        buffer: Arc<Subbuffer<[u8]>>,
-        device: VulkanDevice,
-        count: usize,
-        dtype: DType,
-    ) -> Self {
+    pub fn new(buffer: Arc<Buffer>, device: VulkanDevice, count: usize, dtype: DType) -> Self {
         Self {
             buffer,
             device,
@@ -365,7 +360,7 @@ impl BackendDevice for VulkanDevice {
 
     fn zeros_impl(&self, shape: &crate::Shape, dtype: crate::DType) -> Result<Self::Storage> {
         let size = shape.elem_count() * dtype.size_in_bytes();
-        let buffer = self.allocate_buffer(size)?;
+        let buffer = self.allocate_buffer(size, 0)?;
         Ok(VulkanStorage::new(
             buffer,
             self.clone(),
