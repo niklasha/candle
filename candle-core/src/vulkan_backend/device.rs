@@ -34,7 +34,7 @@ impl VulkanDevice {
             },
             (0..size).map(|_| 0u8),
         )
-        .map_err(|e| VulkanError::ValidatedAllocateBufferError(e))?;
+        .map_err(VulkanError::ValidatedAllocateBufferError)?;
 
         Ok(Arc::new(buffer))
     }
@@ -45,7 +45,7 @@ impl VulkanDevice {
     ) -> Result<Arc<PhysicalDevice>> {
         let physical_devices = instance
             .enumerate_physical_devices()
-            .map_err(|e| VulkanError::VulkanError(e))?;
+            .map_err(VulkanError::VulkanError)?;
         let physical = physical_devices
             .into_iter()
             .nth(gpu_id)
@@ -67,11 +67,11 @@ impl VulkanDevice {
             queue_family,
             CommandBufferUsage::OneTimeSubmit,
         )
-        .map_err(|e| VulkanError::ValidatedVulkanError(e))?;
+        .map_err(VulkanError::ValidatedVulkanError)?;
 
         let command_buffer = builder
             .build()
-            .map_err(|e| VulkanError::ValidatedVulkanError(e))?;
+            .map_err(VulkanError::ValidatedVulkanError)?;
         Ok(command_buffer)
     }
 
@@ -85,7 +85,7 @@ impl VulkanDevice {
         };
 
         let memory = DeviceMemory::allocate(self.device.clone(), allocate_info)
-            .map_err(|e| VulkanError::ValidatedVulkanError(e))?;
+            .map_err(VulkanError::ValidatedVulkanError)?;
 
         Ok(memory)
     }
