@@ -3,7 +3,9 @@ use crate::cpu_backend::CpuStorage;
 use crate::error::Result;
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{DType, Layout};
+use half::{bf16, f16};
 use std::sync::Arc;
+use vulkano::buffer::BufferContents;
 use vulkano::{
     buffer::Buffer,
     device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo},
@@ -61,12 +63,16 @@ impl VulkanStorage {
             dtype,
         }
     }
+
+    pub fn to_cpu<T: BufferContents + Clone + Copy + Send>(&self) -> Result<Vec<T>> {
+        self.device.to_cpu(self.buffer.clone())
+    }
 }
 
 impl BackendStorage for VulkanStorage {
     type Device = VulkanDevice;
 
-    fn try_clone(&self, _layout: &crate::Layout) -> crate::Result<Self> {
+    fn try_clone(&self, _layout: &crate::Layout) -> Result<Self> {
         Ok(self.clone())
     }
 
@@ -80,32 +86,34 @@ impl BackendStorage for VulkanStorage {
         &self.device
     }
 
-    fn to_cpu_storage(&self) -> crate::Result<CpuStorage> {
-        // Implement conversion to CPU storage
-        todo!()
+    fn to_cpu_storage(&self) -> Result<CpuStorage> {
+        match self.dtype {
+            DType::U8 => Ok(CpuStorage::U8(self.to_cpu()?)),
+            DType::U32 => Ok(CpuStorage::U32(self.to_cpu()?)),
+            DType::I64 => Ok(CpuStorage::I64(self.to_cpu()?)),
+            DType::F16 => Ok(CpuStorage::F16(self.to_cpu()?)),
+            DType::BF16 => Ok(CpuStorage::BF16(self.to_cpu()?)),
+            DType::F32 => Ok(CpuStorage::F32(self.to_cpu()?)),
+            DType::F64 => Ok(CpuStorage::F64(self.to_cpu()?)),
+        }
     }
 
-    fn affine(&self, _layout: &crate::Layout, _scale: f64, _bias: f64) -> crate::Result<Self> {
+    fn affine(&self, _layout: &crate::Layout, _scale: f64, _bias: f64) -> Result<Self> {
         // Implement affine transformation
         todo!()
     }
 
-    fn powf(&self, _layout: &crate::Layout, _exp: f64) -> crate::Result<Self> {
+    fn powf(&self, _layout: &crate::Layout, _exp: f64) -> Result<Self> {
         // Implement power function
         todo!()
     }
 
-    fn elu(&self, _layout: &crate::Layout, _alpha: f64) -> crate::Result<Self> {
+    fn elu(&self, _layout: &crate::Layout, _alpha: f64) -> Result<Self> {
         // Implement ELU function
         todo!()
     }
 
-    fn reduce_op(
-        &self,
-        _op: ReduceOp,
-        _layout: &crate::Layout,
-        _axes: &[usize],
-    ) -> crate::Result<Self> {
+    fn reduce_op(&self, _op: ReduceOp, _layout: &crate::Layout, _axes: &[usize]) -> Result<Self> {
         // Implement reduction operation
         todo!()
     }
@@ -116,17 +124,17 @@ impl BackendStorage for VulkanStorage {
         _rhs: &Self,
         _lhs_layout: &crate::Layout,
         _rhs_layout: &crate::Layout,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement comparison
         todo!()
     }
 
-    fn to_dtype(&self, _layout: &crate::Layout, _dtype: crate::DType) -> crate::Result<Self> {
+    fn to_dtype(&self, _layout: &crate::Layout, _dtype: crate::DType) -> Result<Self> {
         // Implement conversion to data type
         todo!()
     }
 
-    fn unary_impl<B: UnaryOpT>(&self, _layout: &crate::Layout) -> crate::Result<Self> {
+    fn unary_impl<B: UnaryOpT>(&self, _layout: &crate::Layout) -> Result<Self> {
         // Implement unary operation
         todo!()
     }
@@ -136,7 +144,7 @@ impl BackendStorage for VulkanStorage {
         _rhs: &Self,
         _lhs_layout: &crate::Layout,
         _rhs_layout: &crate::Layout,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement binary operation
         todo!()
     }
@@ -148,7 +156,7 @@ impl BackendStorage for VulkanStorage {
         _x_layout: &crate::Layout,
         _y: &Self,
         _y_layout: &crate::Layout,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement where condition
         todo!()
     }
@@ -159,7 +167,7 @@ impl BackendStorage for VulkanStorage {
         _kernel: &Self,
         _kernel_layout: &crate::Layout,
         _params: &crate::conv::ParamsConv1D,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement 1D convolution
         todo!()
     }
@@ -170,7 +178,7 @@ impl BackendStorage for VulkanStorage {
         _kernel: &Self,
         _kernel_layout: &crate::Layout,
         _params: &crate::conv::ParamsConvTranspose1D,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement 1D transposed convolution
         todo!()
     }
@@ -181,7 +189,7 @@ impl BackendStorage for VulkanStorage {
         _kernel: &Self,
         _kernel_layout: &crate::Layout,
         _params: &crate::conv::ParamsConv2D,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement 2D convolution
         todo!()
     }
@@ -192,7 +200,7 @@ impl BackendStorage for VulkanStorage {
         _kernel: &Self,
         _kernel_layout: &crate::Layout,
         _params: &crate::conv::ParamsConvTranspose2D,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement 2D transposed convolution
         todo!()
     }
@@ -202,7 +210,7 @@ impl BackendStorage for VulkanStorage {
         _layout: &crate::Layout,
         _kernel_size: (usize, usize),
         _stride: (usize, usize),
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement 2D average pooling
         todo!()
     }
@@ -212,12 +220,12 @@ impl BackendStorage for VulkanStorage {
         _layout: &crate::Layout,
         _kernel_size: (usize, usize),
         _stride: (usize, usize),
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement 2D max pooling
         todo!()
     }
 
-    fn upsample_nearest1d(&self, _layout: &crate::Layout, _scale: usize) -> crate::Result<Self> {
+    fn upsample_nearest1d(&self, _layout: &crate::Layout, _scale: usize) -> Result<Self> {
         // Implement 1D nearest upsampling
         todo!()
     }
@@ -227,7 +235,7 @@ impl BackendStorage for VulkanStorage {
         _layout: &crate::Layout,
         _scale_h: usize,
         _scale_w: usize,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement 2D nearest upsampling
         todo!()
     }
@@ -238,7 +246,7 @@ impl BackendStorage for VulkanStorage {
         _indices: &Self,
         _indices_layout: &crate::Layout,
         _axis: usize,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement gather
         todo!()
     }
@@ -251,7 +259,7 @@ impl BackendStorage for VulkanStorage {
         _updates: &Self,
         _updates_layout: &crate::Layout,
         _axis: usize,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement scatter add
         todo!()
     }
@@ -264,7 +272,7 @@ impl BackendStorage for VulkanStorage {
         _updates: &Self,
         _updates_layout: &crate::Layout,
         _axis: usize,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         // Implement index add
         todo!()
     }
@@ -278,12 +286,12 @@ impl BackendStorage for VulkanStorage {
         _dst_stride1: usize,
         _src_offset: usize,
         _dst_offset: usize,
-    ) -> crate::Result<()> {
+    ) -> Result<()> {
         // Implement 2D copy
         todo!()
     }
 
-    fn index_select(&self, _: &Self, _: &Layout, _: &Layout, _: usize) -> crate::Result<Self> {
+    fn index_select(&self, _: &Self, _: &Layout, _: &Layout, _: usize) -> Result<Self> {
         todo!()
     }
 
@@ -293,11 +301,11 @@ impl BackendStorage for VulkanStorage {
         _: (usize, usize, usize, usize),
         _: &Layout,
         _: &Layout,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         todo!()
     }
 
-    fn copy_strided_src(&self, _: &mut Self, _: usize, _: &Layout) -> crate::Result<()> {
+    fn copy_strided_src(&self, _: &mut Self, _: usize, _: &Layout) -> Result<()> {
         todo!()
     }
 }
@@ -358,8 +366,8 @@ impl BackendDevice for VulkanDevice {
         todo!()
     }
 
-    fn zeros_impl(&self, shape: &crate::Shape, dtype: crate::DType) -> Result<Self::Storage> {
-        let size = shape.elem_count() * dtype.size_in_bytes();
+    fn zeros_impl(&self, shape: &crate::Shape, dtype: DType) -> Result<Self::Storage> {
+        let size = (shape.elem_count() * dtype.size_in_bytes() + 3) / 4;
         let buffer = self.allocate_buffer(size, 0)?;
         Ok(VulkanStorage::new(
             buffer,
@@ -369,9 +377,43 @@ impl BackendDevice for VulkanDevice {
         ))
     }
 
-    fn ones_impl(&self, _shape: &crate::Shape, _dtype: crate::DType) -> Result<Self::Storage> {
-        // Implement ones initialization
-        todo!()
+    fn ones_impl(&self, shape: &crate::Shape, dtype: DType) -> Result<Self::Storage> {
+        let num_elements = shape.elem_count();
+
+        // Adjust the number of elements based on the dtype
+        let num_units = match dtype {
+            DType::F32 | DType::U32 => num_elements, // 1 unit per element
+            DType::F16 | DType::BF16 => (num_elements + 1) / 2, // 2 elements per unit
+            DType::U8 => (num_elements + 3) / 4,     // 4 elements per unit
+            DType::I64 | DType::F64 => num_elements, // 1 unit per element, but each unit is 64-bit
+        };
+
+        // Convert the value 1 to the appropriate u32 bit pattern based on dtype
+        let buffer = match dtype {
+            DType::F32 => self.allocate_buffer(num_units, 1.0f32.to_bits())?,
+            DType::U32 => self.allocate_buffer(num_units, 1u32)?,
+            DType::F16 => {
+                let bits = f16::from_f32(1.0).to_bits();
+                self.allocate_buffer(num_units, ((bits as u32) << 16) | (bits as u32))?
+            }
+            DType::BF16 => {
+                let bits = bf16::from_f32(1.0).to_bits();
+                self.allocate_buffer(num_units, ((bits as u32) << 16) | (bits as u32))?
+            }
+            DType::U8 => {
+                let byte = 1u8 as u32;
+                self.allocate_buffer(num_units, (byte << 24) | (byte << 16) | (byte << 8) | byte)?
+            }
+            DType::I64 => self.allocate_buffer_64(num_units, 1i64 as u64)?,
+            DType::F64 => self.allocate_buffer_64(num_units, 1.0f64.to_bits())?,
+        };
+
+        Ok(VulkanStorage::new(
+            buffer,
+            self.clone(),
+            num_elements,
+            dtype,
+        ))
     }
 
     unsafe fn alloc_uninit(
@@ -388,10 +430,23 @@ impl BackendDevice for VulkanDevice {
         todo!()
     }
 
-    fn storage_from_cpu_storage_owned(&self, _cpu_storage: CpuStorage) -> Result<Self::Storage> {
-        // Implement storage conversion from owned CPU storage
-        todo!()
-    }
+    // fn storage_from_cpu_storage_owned(&self, storage: CpuStorage) -> Result<Self::Storage> {
+    //     let (count, buffer) = match storage {
+    //         CpuStorage::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+    //         CpuStorage::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+    //         CpuStorage::I64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+    //         CpuStorage::BF16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+    //         CpuStorage::F16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+    //         CpuStorage::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+    //         CpuStorage::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+    //     };
+    //     Ok(Self::Storage::new(
+    //         buffer?,
+    //         self.clone(),
+    //         count,
+    //         storage.dtype(),
+    //     ))
+    // }
 
     fn rand_uniform(
         &self,
@@ -425,6 +480,10 @@ impl BackendDevice for VulkanDevice {
     }
 
     fn synchronize(&self) -> Result<()> {
+        todo!()
+    }
+
+    fn storage_from_cpu_storage_owned(&self, _: CpuStorage) -> Result<Self::Storage> {
         todo!()
     }
 }
