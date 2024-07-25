@@ -71,6 +71,7 @@ impl PyDType {
 
 static CUDA_DEVICE: std::sync::Mutex<Option<Device>> = std::sync::Mutex::new(None);
 static METAL_DEVICE: std::sync::Mutex<Option<Device>> = std::sync::Mutex::new(None);
+static VULKAN_DEVICE: std::sync::Mutex<Option<Device>> = std::sync::Mutex::new(None);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PyDevice {
@@ -111,6 +112,15 @@ impl PyDevice {
                 *device = Some(d.clone());
                 Ok(d)
             }
+            Self::Vulkan => {
+                let mut device = VULKAN_DEVICE.lock().unwrap();
+                if let Some(device) = device.as_ref() {
+                    return Ok(device.clone());
+                };
+                let d = Device::new_metal(0).map_err(wrap_err)?;
+                *device = Some(d.clone());
+                Ok(d)
+            }
         }
     }
 }
@@ -133,6 +143,7 @@ impl ToPyObject for PyDevice {
             PyDevice::Cpu => "cpu",
             PyDevice::Cuda => "cuda",
             PyDevice::Metal => "metal",
+            PyDevice::Vulkan => "vulkan",
         };
         str.to_object(py)
     }
