@@ -425,28 +425,23 @@ impl BackendDevice for VulkanDevice {
         todo!()
     }
 
-    fn storage_from_cpu_storage(&self, _cpu_storage: &CpuStorage) -> Result<Self::Storage> {
-        // Implement storage conversion from CPU
-        todo!()
+    fn storage_from_cpu_storage(&self, storage: &CpuStorage) -> Result<Self::Storage> {
+        let (count, buffer) = match storage {
+            CpuStorage::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            CpuStorage::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            CpuStorage::I64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            CpuStorage::BF16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            CpuStorage::F16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            CpuStorage::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+            CpuStorage::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+        };
+        Ok(Self::Storage::new(
+            buffer?,
+            self.clone(),
+            count,
+            storage.dtype(),
+        ))
     }
-
-    // fn storage_from_cpu_storage_owned(&self, storage: CpuStorage) -> Result<Self::Storage> {
-    //     let (count, buffer) = match storage {
-    //         CpuStorage::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-    //         CpuStorage::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-    //         CpuStorage::I64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-    //         CpuStorage::BF16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-    //         CpuStorage::F16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-    //         CpuStorage::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-    //         CpuStorage::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-    //     };
-    //     Ok(Self::Storage::new(
-    //         buffer?,
-    //         self.clone(),
-    //         count,
-    //         storage.dtype(),
-    //     ))
-    // }
 
     fn rand_uniform(
         &self,
@@ -483,7 +478,7 @@ impl BackendDevice for VulkanDevice {
         todo!()
     }
 
-    fn storage_from_cpu_storage_owned(&self, _: CpuStorage) -> Result<Self::Storage> {
-        todo!()
+    fn storage_from_cpu_storage_owned(&self, storage: CpuStorage) -> Result<Self::Storage> {
+        self.storage_from_cpu_storage(&storage)
     }
 }
