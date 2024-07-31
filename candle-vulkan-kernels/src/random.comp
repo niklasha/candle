@@ -1,0 +1,37 @@
+#version 450
+
+layout(set = 0, binding = 0) buffer SeedBuffer {
+    uint seed[];
+};
+
+layout(set = 0, binding = 1) buffer OutputBuffer {
+    float rv[];
+};
+
+layout(push_constant) uniform PushConstants {
+    float mean;
+    float stddev;
+} push_constants;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint s = seed[idx];
+
+    // LCG pseudo-random number generator
+    s = 1664525 * s + 1013904223;
+    seed[idx] = s;
+
+    // Convert to float in the range [0, 1]
+    float rand_float = float(s) / 4294967296.0;
+
+    // Box-Muller transform to generate normally distributed values
+    float u1 = rand_float;
+    s = 1664525 * s + 1013904223;
+    seed[idx] = s;
+    float u2 = float(s) / 4294967296.0;
+    float r = sqrt(-2.0 * log(u1));
+    float theta = 2.0 * 3.1415926536 * u2;
+    float z0 = r * cos(theta);
+    // Scale and shift by mean and stddev
+    rv[idx] = z0 * push_constants.stddev + push_constants.mean;
+}
