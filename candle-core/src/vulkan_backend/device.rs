@@ -1,7 +1,8 @@
 use super::VulkanError;
 use crate::{DType, Result};
 use bytemuck::Pod;
-use std::sync::Arc;
+use candle_vulkan_kernels::Kernels;
+use std::sync::{Arc, Mutex};
 use vulkano::buffer::{BufferContents, Subbuffer};
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
@@ -21,6 +22,11 @@ pub struct VulkanDevice {
     pub(super) gpu_id: usize,
     pub(super) device: Arc<Device>,
     pub(super) queue: Arc<Queue>,
+    /// Simple keeper struct to keep track of the already compiled kernels so we can reuse them.
+    /// Heavily used by [`candle_vulkan_kernels`]
+    pub(super) kernels: Arc<Kernels>,
+    /// Seed for random number generation.
+    pub(crate) seed: Arc<Mutex<Subbuffer<[u32]>>>,
 }
 
 impl VulkanDevice {
@@ -96,13 +102,10 @@ impl VulkanDevice {
         Ok(gpu_buffer.buffer().clone())
     }
 
-    pub(super) fn allocate_buffer(&self, size: usize, value: u32) -> Result<Arc<Buffer>> {
-        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(self.device.clone()));
-        let allocator_create_info = StandardCommandBufferAllocatorCreateInfo::default();
-        let command_buffer_allocator =
-            StandardCommandBufferAllocator::new(self.device.clone(), allocator_create_info);
+    pub(super) fn allocate_subbuffer<T: BufferContents + ?Sized>(device: Arc<Device>, size: usize) -> Result<Subbuffer<T>> {
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-        let buffer = Buffer::new_unsized::<[u32]>(
+        let buffer = Buffer::new_unsized(
             memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER
@@ -118,13 +121,30 @@ impl VulkanDevice {
         )
         .map_err(VulkanError::ValidatedAllocateBufferError)?;
 
+        Ok(buffer)
+    }
+
+    pub(super) fn allocate_buffer(&self, size: usize, dtype: DType) -> Result<Arc<Buffer>> {
+        Ok(
+            Self::allocate_subbuffer::<[u32]>(self.device.clone(), (size + 3) / 4)?
+                .buffer()
+                .clone(),
+        )
+    }
+
+    pub(super) fn allocate_filled_subbuffer(device: Arc<Device>, queue: Arc<Queue>, size: usize, value: u32) -> Result<Subbuffer<[u32]>> {
+        let buffer = Self::allocate_subbuffer(device.clone(), size)?;
+        let allocator_create_info = StandardCommandBufferAllocatorCreateInfo::default();
+        let command_buffer_allocator =
+            StandardCommandBufferAllocator::new(device.clone(), allocator_create_info);
+
         // Fill the buffer with the specified value
         let mut builder = AutoCommandBufferBuilder::primary(
             &command_buffer_allocator,
-            self.queue.queue_family_index(),
+            queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
-        .map_err(VulkanError::ValidatedVulkanError)?;
+            .map_err(VulkanError::ValidatedVulkanError)?;
 
         builder
             .fill_buffer(buffer.clone(), value)
@@ -132,7 +152,7 @@ impl VulkanDevice {
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
 
         let future = command_buffer
-            .execute(self.queue.clone())
+            .execute(queue.clone())
             .map_err(VulkanError::CommandBufferExecError)?;
         future
             .then_signal_fence_and_flush()
@@ -140,10 +160,15 @@ impl VulkanDevice {
             .wait(None)
             .map_err(VulkanError::ValidatedVulkanError)?;
 
+        Ok(buffer)
+    }
+
+    pub(super) fn allocate_filled_buffer(&self, size: usize, value: u32) -> Result<Arc<Buffer>> {
+        let buffer = Self::allocate_filled_subbuffer(self.device.clone(), self.queue.clone(), size, value)?;
         Ok(buffer.buffer().clone())
     }
 
-    pub(super) fn allocate_buffer_64(&self, size: usize, value: u64) -> Result<Arc<Buffer>> {
+    pub(super) fn allocate_filled_buffer_64(&self, size: usize, value: u64) -> Result<Arc<Buffer>> {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(self.device.clone()));
 
         // Determine the buffer size in bytes
