@@ -15,23 +15,38 @@ layout(push_constant) uniform PushConstants {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    uint s = seed[idx];
+
+    // Ensure index is within bounds
+    if (idx >= rv.length()) {
+        return;
+    }
+
+    // Read the seed value, ensuring thread 0 updates it
+    uint s = seed[0];
 
     // LCG pseudo-random number generator
-    s = 1664525 * s + 1013904223;
-    seed[idx] = s;
+    // Each thread incorporates its index to generate unique numbers
+    s = 1664525 * (s + idx) + 1013904223;
+
+    // Only thread 0 updates the seed in the buffer
+    if (idx == 0) {
+        seed[0] = s;
+    }
 
     // Convert to float in the range [0, 1]
     float rand_float = float(s) / 4294967296.0;
 
     // Box-Muller transform to generate normally distributed values
     float u1 = rand_float;
+
+    // Generate the second uniform random variable
     s = 1664525 * s + 1013904223;
-    seed[idx] = s;
     float u2 = float(s) / 4294967296.0;
+
     float r = sqrt(-2.0 * log(u1));
     float theta = 2.0 * 3.1415926536 * u2;
     float z0 = r * cos(theta);
+
     // Scale and shift by mean and stddev
     rv[idx] = z0 * push_constants.stddev + push_constants.mean;
 }
