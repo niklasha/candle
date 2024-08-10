@@ -155,7 +155,7 @@ pub fn call_random_normal(
         ).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?
         .push_constants(pipeline.layout().clone(), 0, mean).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?
         .push_constants(pipeline.layout().clone(), 4, stddev).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
-    unsafe { builder.dispatch([length as u32, 1, 1]).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?; }
+    builder.dispatch([length as u32, 1, 1]).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
 
     let command_buffer = builder.build().map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
     let future = sync::now(device).then_execute(queue, command_buffer).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?.then_signal_fence_and_flush().map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
