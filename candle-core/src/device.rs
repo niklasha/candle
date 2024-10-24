@@ -203,7 +203,7 @@ impl Device {
     pub fn supports_bf16(&self) -> bool {
         match self {
             Self::Cuda(_) | Self::Metal(_) => true,
-            Self::Cpu => false,
+            Self::Vulkan(_) | Self::Cpu => false,
         }
     }
 
