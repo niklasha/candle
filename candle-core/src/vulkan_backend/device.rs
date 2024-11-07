@@ -104,7 +104,7 @@ impl VulkanDevice {
         Ok(gpu_buffer.buffer().clone())
     }
 
-    pub(super) fn allocate_subbuffer_2<T: BufferContents + ?Sized>(
+    pub(super) fn allocate_subbuffer_raw<T: BufferContents + ?Sized>(
         memory_allocator: &Arc<StandardMemoryAllocator>,
         size: usize,
     ) -> Result<Subbuffer<T>> {
@@ -131,33 +131,17 @@ impl VulkanDevice {
         &self,
         size: usize,
     ) -> Result<Subbuffer<T>> {
-        let buffer = Buffer::new_unsized(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::STORAGE_BUFFER
-                    | BufferUsage::TRANSFER_DST
-                    | BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                ..Default::default()
-            },
-            size as DeviceSize,
-        )
-        .map_err(VulkanError::ValidatedAllocateBufferError)?;
-
-        Ok(buffer)
+        Self::allocate_subbuffer_raw(&self.memory_allocator, size)
     }
 
-    pub(super) fn allocate_filled_subbuffer_2(
+    pub(super) fn allocate_filled_subbuffer_raw(
         command_buffer_allocator: &Arc<StandardCommandBufferAllocator>,
         memory_allocator: &Arc<StandardMemoryAllocator>,
         queue: Arc<Queue>,
         size: usize,
         value: u32,
     ) -> Result<Subbuffer<[u32]>> {
-        let buffer = Self::allocate_subbuffer_2(memory_allocator, size)?;
+        let buffer = Self::allocate_subbuffer_raw(memory_allocator, size)?;
 
         // Fill the buffer with the specified value
         let mut builder = AutoCommandBufferBuilder::primary(
@@ -190,31 +174,7 @@ impl VulkanDevice {
         size: usize,
         value: u32,
     ) -> Result<Subbuffer<[u32]>> {
-        let buffer = self.allocate_subbuffer(size)?;
-
-        // Fill the buffer with the specified value
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &self.command_buffer_allocator,
-            queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .map_err(VulkanError::ValidatedVulkanError)?;
-
-        builder
-            .fill_buffer(buffer.clone(), value)
-            .map_err(VulkanError::ValidationError)?;
-        let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
-
-        let future = command_buffer
-            .execute(queue.clone())
-            .map_err(VulkanError::CommandBufferExecError)?;
-        future
-            .then_signal_fence_and_flush()
-            .unwrap()
-            .wait(None)
-            .map_err(VulkanError::ValidatedVulkanError)?;
-
-        Ok(buffer)
+        Self::allocate_filled_subbuffer_raw(&self.command_buffer_allocator, &self.memory_allocator, queue, size, value)
     }
 
     pub(super) fn allocate_filled_buffer(&self, size: usize, value: u32) -> Result<Arc<Buffer>> {
