@@ -1,16 +1,18 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use vulkano::buffer::Subbuffer;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
-use vulkano::command_buffer::allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo};
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::descriptor_set::allocator::{StandardDescriptorSetAllocator, StandardDescriptorSetAllocatorCreateInfo};
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::device::{Device, Queue};
 use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo};
 use vulkano::pipeline::compute::ComputePipelineCreateInfo;
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
 use vulkano::shader::ShaderModule;
 use vulkano::sync::{self, GpuFuture};
+use crate::VulkanKernelError::CommandError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Source {
@@ -55,45 +57,107 @@ impl<T> From<std::sync::PoisonError<T>> for VulkanKernelError {
     }
 }
 
-#[derive(Debug)]
-pub struct Kernels {
-    pipelines: RwLock<HashMap<Source, Arc<ComputePipeline>>>,
+pub struct GpuFutureHolder {
+    future: Arc<Mutex<Option<Box<dyn GpuFuture + Send>>>>,
 }
 
-impl Default for Kernels {
-    fn default() -> Self {
-        Self::new()
+impl fmt::Debug for GpuFutureHolder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuFutureHolder")
+            .field("future", &"<GpuFuture>")
+            .finish()
     }
 }
 
-impl Kernels {
+impl GpuFutureHolder {
     pub fn new() -> Self {
-        let pipelines = RwLock::new(HashMap::new());
-        Self { pipelines }
+        Self {
+            future: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<Option<Box<dyn GpuFuture + Send>>>, VulkanKernelError> {
+        self.future.lock().map_err(|e| e.into())
+    }
+
+    pub fn set_future(&self, future: Box<dyn GpuFuture + Send>) -> Result<(), VulkanKernelError> {
+        let mut guard = self.lock()?;
+        *guard = Some(future);
+        Ok(())
+    }
+
+    pub fn sync_if_needed(&self) -> Result<(), VulkanKernelError> {
+        let mut guard = self.lock()?;
+        if let Some(future) = guard.take() {
+            future.then_signal_fence_and_flush()
+                .map_err(|e| CommandError(e.to_string()))?
+                .wait(None)
+                .map_err(|e| CommandError(e.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Kernels {
+    shader_modules: RwLock<HashMap<Source, Arc<ShaderModule>>>,
+    pipelines: RwLock<HashMap<Source, Arc<ComputePipeline>>>,
+}
+
+impl Kernels {
+    pub fn new(device: Arc<Device>) -> Self {
+        let mut shader_modules = HashMap::new();
+        // Load and cache the shader modules here
+        let random_shader = random::load(device.clone())
+            .expect("Failed to load random shader module");
+        shader_modules.insert(Source::Random, random_shader);
+
+        Self {
+            shader_modules: RwLock::new(shader_modules),
+            pipelines: RwLock::new(HashMap::new()),
+        }
     }
 
     pub fn load_pipeline(
         &self,
         device: Arc<Device>,
         source: Source,
-        shader: Arc<ShaderModule>,
     ) -> Result<Arc<ComputePipeline>, VulkanKernelError> {
+        // Use the cached shader module
+        let shader_module = {
+            let shader_modules = self.shader_modules.read()?;
+            shader_modules
+                .get(&source)
+                .ok_or_else(|| VulkanKernelError::LoadLibraryError("Shader module not found".to_string()))?
+                .clone()
+        };
+
+        // Check if the pipeline is already cached
         let mut pipelines = self.pipelines.write()?;
         if let Some(pipeline) = pipelines.get(&source) {
             return Ok(pipeline.clone());
         }
 
-        let stage = PipelineShaderStageCreateInfo::new(shader.entry_point("main").ok_or(VulkanKernelError::FailedToCreatePipeline("no entrypoint".to_string()))?);
+        // Create the pipeline using the shader module
+        let stage = PipelineShaderStageCreateInfo::new(
+            shader_module.entry_point("main")
+                .ok_or(VulkanKernelError::FailedToCreatePipeline("No entry point".to_string()))?,
+        );
+
         let layout = PipelineLayout::new(
             device.clone(),
             PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                .into_pipeline_layout_create_info(device.clone()).map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?,
-        ).map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?;
+                .into_pipeline_layout_create_info(device.clone())
+                .map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?,
+        )
+            .map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?;
+
         let pipeline = ComputePipeline::new(
             device.clone(),
             None,
             ComputePipelineCreateInfo::stage_layout(stage, layout),
-        ).map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?;
+        )
+            .map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?;
 
         pipelines.insert(source, pipeline.clone());
         Ok(pipeline)
@@ -114,20 +178,20 @@ pub fn call_random_normal(
     device: Arc<Device>,
     queue: Arc<Queue>,
     kernels: &Kernels,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     name: &'static str,
     mean: f32,
     stddev: f32,
     length: usize,
     seed: Subbuffer<[u32]>,
     buffer: Subbuffer<[f32]>,
+    future_holder: &GpuFutureHolder,
 ) -> Result<(), VulkanKernelError> {
-    let shader = random::load(device.clone()).map_err(|e| VulkanKernelError::LoadLibraryError(e.to_string()))?;
-
-    let pipeline = kernels.load_pipeline(device.clone(), Source::Random, shader).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
+    let pipeline = kernels.load_pipeline(device.clone(), Source::Random).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
     let layout = pipeline.layout().set_layouts().get(0).ok_or(VulkanKernelError::CommandError("no set layouts".to_string()))?;
-    let allocator = StandardDescriptorSetAllocator::new(device.clone(), StandardDescriptorSetAllocatorCreateInfo::default());
     let descriptor_set = PersistentDescriptorSet::new(
-        &allocator,
+        &*descriptor_set_allocator,
         layout.clone(),
         [
             WriteDescriptorSet::buffer(0, seed),
@@ -137,10 +201,7 @@ pub fn call_random_normal(
     ).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
 
     let mut builder = AutoCommandBufferBuilder::primary(
-        &StandardCommandBufferAllocator::new(
-            device.clone(),
-            StandardCommandBufferAllocatorCreateInfo::default(),
-        ),
+        &*command_buffer_allocator,
         queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
     ).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
@@ -159,6 +220,6 @@ pub fn call_random_normal(
 
     let command_buffer = builder.build().map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
     let future = sync::now(device).then_execute(queue, command_buffer).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?.then_signal_fence_and_flush().map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
-    future.wait(None).map_err(|e| VulkanKernelError::CommandError(e.to_string()))?;
+    future_holder.set_future(Box::new(future))?;
     Ok(())
 }

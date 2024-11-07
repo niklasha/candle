@@ -3,10 +3,13 @@ use crate::cpu_backend::CpuStorage;
 use crate::error::Result;
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{DType, Layout, Shape};
-use candle_vulkan_kernels::Kernels;
+use candle_vulkan_kernels::{GpuFutureHolder, Kernels};
 use half::{bf16, f16};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use vulkano::buffer::{BufferContents, Subbuffer};
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::{
     buffer::Buffer,
     device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo},
@@ -79,6 +82,7 @@ pub struct VulkanStorage {
     device: VulkanDevice,
     count: usize,
     dtype: DType,
+    pending_future: Arc<GpuFutureHolder>,
 }
 
 impl VulkanStorage {
@@ -88,10 +92,14 @@ impl VulkanStorage {
             device,
             count,
             dtype,
+            pending_future: Arc::new(GpuFutureHolder::new()),
         }
     }
 
     pub fn to_cpu<T: BufferContents + Clone + Copy + Send>(&self) -> Result<Vec<T>> {
+        self.pending_future
+            .sync_if_needed()
+            .map_err(VulkanError::from)?;
         self.device.to_cpu(self.buffer.clone())
     }
 }
@@ -370,9 +378,27 @@ impl BackendDevice for VulkanDevice {
             },
         )
         .map_err(VulkanError::ValidatedVulkanError)?;
+
+        // Create command buffer allocator
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+
+        let descriptor_set_allocator =
+            StandardDescriptorSetAllocator::new(device.clone(), Default::default());
+
         let queue = queues.next().unwrap();
-        let kernels = Arc::new(Kernels::new());
-        let seed: Subbuffer<[u32]> = Self::allocate_filled_subbuffer(device.clone(), queue.clone(), 1, 299792458)?;
+        let kernels = Arc::new(Kernels::new(device.clone()));
+        let seed: Subbuffer<[u32]> = Self::allocate_filled_subbuffer_2(
+            &command_buffer_allocator,
+            &memory_allocator,
+            queue.clone(),
+            1,
+            299792458,
+        )?;
 
         Ok(VulkanDevice {
             gpu_id: ordinal,
@@ -380,6 +406,9 @@ impl BackendDevice for VulkanDevice {
             queue,
             kernels,
             seed: Arc::new(Mutex::new(seed)),
+            command_buffer_allocator,
+            memory_allocator,
+            descriptor_set_allocator: Arc::new(descriptor_set_allocator),
         })
     }
 
@@ -484,31 +513,32 @@ impl BackendDevice for VulkanDevice {
             //DType::BF16 => "rand_normal_bf16",
             dtype => crate::bail!("rand_uniform not implemented for {dtype:?}"),
         };
-        let buffer = Self::allocate_subbuffer(
-            self.device.clone(),
-            shape.elem_count() * dtype.size_in_bytes(),
-        )?;
+        let buffer = self.allocate_subbuffer(shape.elem_count() * dtype.size_in_bytes())?;
+        let storage = VulkanStorage::new(
+            buffer.buffer().clone(),
+            self.clone(),
+            shape.elem_count(),
+            dtype,
+        );
         let seed = self.seed.lock().map_err(VulkanError::from)?;
         // XXX
         candle_vulkan_kernels::call_random_normal(
             self.device.clone(),
             self.queue.clone(),
             &self.kernels,
+            self.command_buffer_allocator.clone(),
+            self.descriptor_set_allocator.clone(),
             name,
             ((high + low) / 2f64) as f32,
             ((high - low) / 4f64) as f32,
             shape.elem_count(),
             seed.clone(),
             buffer.clone(),
+            &storage.pending_future,
         )
-            .map_err(VulkanError::from)?;
+        .map_err(VulkanError::from)?;
 
-        Ok(Self::Storage::new(
-            buffer.buffer().clone(),
-            self.clone(),
-            shape.elem_count(),
-            dtype,
-        ))
+        Ok(storage)
     }
 
     fn rand_normal(
@@ -524,30 +554,31 @@ impl BackendDevice for VulkanDevice {
             //DType::BF16 => "rand_normal_bf16",
             dtype => crate::bail!("rand_uniform not implemented for {dtype:?}"),
         };
-        let buffer = Self::allocate_subbuffer(
-            self.device.clone(),
-            shape.elem_count() * dtype.size_in_bytes(),
-        )?;
+        let buffer = self.allocate_subbuffer(shape.elem_count() * dtype.size_in_bytes())?;
+        let storage = Self::Storage::new(
+            buffer.buffer().clone(),
+            self.clone(),
+            shape.elem_count(),
+            dtype,
+        );
         let seed = self.seed.lock().map_err(VulkanError::from)?;
         candle_vulkan_kernels::call_random_normal(
             self.device.clone(),
             self.queue.clone(),
             &self.kernels,
+            self.command_buffer_allocator.clone(),
+            self.descriptor_set_allocator.clone(),
             name,
             mean as f32,
             stddev as f32,
             shape.elem_count(),
             seed.clone(),
             buffer.clone(),
+            &storage.pending_future,
         )
         .map_err(VulkanError::from)?;
 
-        Ok(Self::Storage::new(
-            buffer.buffer().clone(),
-            self.clone(),
-            shape.elem_count(),
-            dtype,
-        ))
+        Ok(storage)
     }
 
     fn set_seed(&self, seed: u64) -> Result<()> {

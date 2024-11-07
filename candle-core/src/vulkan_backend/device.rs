@@ -4,6 +4,7 @@ use bytemuck::Pod;
 use candle_vulkan_kernels::Kernels;
 use std::sync::{Arc, Mutex};
 use vulkano::buffer::{BufferContents, Subbuffer};
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
@@ -27,6 +28,9 @@ pub struct VulkanDevice {
     pub(super) kernels: Arc<Kernels>,
     /// Seed for random number generation.
     pub(crate) seed: Arc<Mutex<Subbuffer<[u32]>>>,
+    pub command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    pub memory_allocator: Arc<StandardMemoryAllocator>,
+    pub descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
 }
 
 impl VulkanDevice {
@@ -34,10 +38,8 @@ impl VulkanDevice {
     where
         T: BufferContents + Pod + Sync + Send + Clone,
     {
-        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(self.device.clone()));
-
         let cpu_buffer = Buffer::from_iter(
-            memory_allocator.clone(),
+            self.memory_allocator.clone(),
             BufferCreateInfo {
                 // Specify that this buffer will be used as a transfer source.
                 usage: BufferUsage::TRANSFER_SRC,
@@ -54,7 +56,7 @@ impl VulkanDevice {
         .map_err(VulkanError::ValidatedAllocateBufferError)?;
 
         let gpu_buffer = Buffer::new_slice::<T>(
-            memory_allocator.clone(),
+            self.memory_allocator.clone(),
             BufferCreateInfo {
                 // Specify use as a storage buffer and transfer destination.
                 usage: BufferUsage::STORAGE_BUFFER
@@ -102,9 +104,10 @@ impl VulkanDevice {
         Ok(gpu_buffer.buffer().clone())
     }
 
-    pub(super) fn allocate_subbuffer<T: BufferContents + ?Sized>(device: Arc<Device>, size: usize) -> Result<Subbuffer<T>> {
-        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-
+    pub(super) fn allocate_subbuffer_2<T: BufferContents + ?Sized>(
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+        size: usize,
+    ) -> Result<Subbuffer<T>> {
         let buffer = Buffer::new_unsized(
             memory_allocator.clone(),
             BufferCreateInfo {
@@ -124,27 +127,78 @@ impl VulkanDevice {
         Ok(buffer)
     }
 
-    pub(super) fn allocate_buffer(&self, size: usize, dtype: DType) -> Result<Arc<Buffer>> {
-        Ok(
-            Self::allocate_subbuffer::<[u32]>(self.device.clone(), (size + 3) / 4)?
-                .buffer()
-                .clone(),
+    pub(super) fn allocate_subbuffer<T: BufferContents + ?Sized>(
+        &self,
+        size: usize,
+    ) -> Result<Subbuffer<T>> {
+        let buffer = Buffer::new_unsized(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER
+                    | BufferUsage::TRANSFER_DST
+                    | BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            size as DeviceSize,
         )
+        .map_err(VulkanError::ValidatedAllocateBufferError)?;
+
+        Ok(buffer)
     }
 
-    pub(super) fn allocate_filled_subbuffer(device: Arc<Device>, queue: Arc<Queue>, size: usize, value: u32) -> Result<Subbuffer<[u32]>> {
-        let buffer = Self::allocate_subbuffer(device.clone(), size)?;
-        let allocator_create_info = StandardCommandBufferAllocatorCreateInfo::default();
-        let command_buffer_allocator =
-            StandardCommandBufferAllocator::new(device.clone(), allocator_create_info);
+    pub(super) fn allocate_filled_subbuffer_2(
+        command_buffer_allocator: &Arc<StandardCommandBufferAllocator>,
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+        queue: Arc<Queue>,
+        size: usize,
+        value: u32,
+    ) -> Result<Subbuffer<[u32]>> {
+        let buffer = Self::allocate_subbuffer_2(memory_allocator, size)?;
 
         // Fill the buffer with the specified value
         let mut builder = AutoCommandBufferBuilder::primary(
-            &command_buffer_allocator,
+            command_buffer_allocator,
             queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
+        .map_err(VulkanError::ValidatedVulkanError)?;
+
+        builder
+            .fill_buffer(buffer.clone(), value)
+            .map_err(VulkanError::ValidationError)?;
+        let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
+
+        let future = command_buffer
+            .execute(queue.clone())
+            .map_err(VulkanError::CommandBufferExecError)?;
+        future
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
             .map_err(VulkanError::ValidatedVulkanError)?;
+
+        Ok(buffer)
+    }
+
+    pub(super) fn allocate_filled_subbuffer(
+        &self,
+        queue: Arc<Queue>,
+        size: usize,
+        value: u32,
+    ) -> Result<Subbuffer<[u32]>> {
+        let buffer = self.allocate_subbuffer(size)?;
+
+        // Fill the buffer with the specified value
+        let mut builder = AutoCommandBufferBuilder::primary(
+            &self.command_buffer_allocator,
+            queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .map_err(VulkanError::ValidatedVulkanError)?;
 
         builder
             .fill_buffer(buffer.clone(), value)
@@ -164,18 +218,16 @@ impl VulkanDevice {
     }
 
     pub(super) fn allocate_filled_buffer(&self, size: usize, value: u32) -> Result<Arc<Buffer>> {
-        let buffer = Self::allocate_filled_subbuffer(self.device.clone(), self.queue.clone(), size, value)?;
+        let buffer = self.allocate_filled_subbuffer(self.queue.clone(), size, value)?;
         Ok(buffer.buffer().clone())
     }
 
     pub(super) fn allocate_filled_buffer_64(&self, size: usize, value: u64) -> Result<Arc<Buffer>> {
-        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(self.device.clone()));
-
         // Determine the buffer size in bytes
         let buffer_size = size * std::mem::size_of::<u64>();
 
         let cpu_buffer = Buffer::new_unsized::<[u8]>(
-            memory_allocator.clone(),
+            self.memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_SRC,
                 ..Default::default()
@@ -199,7 +251,7 @@ impl VulkanDevice {
         }
 
         let gpu_buffer = Buffer::new_unsized::<[u8]>(
-            memory_allocator.clone(),
+            self.memory_allocator.clone(),
             BufferCreateInfo {
                 // Specify use as a storage buffer and transfer destination.
                 usage: BufferUsage::STORAGE_BUFFER
@@ -251,11 +303,9 @@ impl VulkanDevice {
         &self,
         buffer: Arc<Buffer>,
     ) -> Result<Vec<T>> {
-        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(self.device.clone()));
-
         // Create a CPU-accessible buffer
         let cpu_buffer = Buffer::new_unsized::<[T]>(
-            memory_allocator.clone(),
+            self.memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_DST,
                 ..Default::default()
@@ -301,7 +351,7 @@ impl VulkanDevice {
         let cpu_buffer_content = cpu_buffer.read().unwrap();
 
         // Convert buffer content to Vec<T>
-        let result: Vec<T> = cpu_buffer_content.iter().map(|&v| v.clone()).collect();
+        let result: Vec<T> = cpu_buffer_content.iter().copied().collect();
         Ok(result)
     }
 
