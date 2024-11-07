@@ -392,7 +392,7 @@ impl BackendDevice for VulkanDevice {
 
         let queue = queues.next().unwrap();
         let kernels = Arc::new(Kernels::new(device.clone()));
-        let seed: Subbuffer<[u32]> = Self::allocate_filled_subbuffer_2(
+        let seed: Subbuffer<[u32]> = Self::allocate_filled_subbuffer_raw(
             &command_buffer_allocator,
             &memory_allocator,
             queue.clone(),
