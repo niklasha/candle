@@ -137,7 +137,8 @@ impl Device {
         match self {
             Self::Cuda(d) => Ok(d),
             Self::Cpu => crate::bail!("expected a cuda device, got cpu"),
-            Self::Metal(_) => crate::bail!("expected a cuda device, got Metal"),
+            Self::Metal(_) => crate::bail!("expected a cuda device, got metal"),
+            Self::Vulkan(_) => crate::bail!("expected a cuda device, got vulkan"),
         }
     }
 
@@ -146,6 +147,16 @@ impl Device {
             Self::Cuda(_) => crate::bail!("expected a metal device, got cuda"),
             Self::Cpu => crate::bail!("expected a metal device, got cpu"),
             Self::Metal(d) => Ok(d),
+            Self::Vulkan(_) => crate::bail!("expected a metal device, got vulkan"),
+        }
+    }
+
+    pub fn as_vulkan_device(&self) -> Result<&crate::VulkanDevice> {
+        match self {
+            Self::Cuda(_) => crate::bail!("expected a vulkan device, got cuda"),
+            Self::Cpu => crate::bail!("expected a vulkan device, got cpu"),
+            Self::Metal(_) => crate::bail!("expected a vulkan device, got metal"),
+            Self::Vulkan(d) => Ok(d),
         }
     }
 
