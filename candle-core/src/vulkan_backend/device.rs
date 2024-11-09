@@ -34,6 +34,11 @@ pub struct VulkanDevice {
 }
 
 impl VulkanDevice {
+    pub(super) fn new_buffer(&self, element_count: usize, dtype: DType) -> Result<Arc<Buffer>> {
+        let buffer = self.allocate_buffer(element_count * dtype.size())?;
+        Ok(buffer.clone())
+    }
+
     pub(super) fn new_buffer_with_data<T>(&self, data: &[T]) -> Result<Arc<Buffer>>
     where
         T: BufferContents + Pod + Sync + Send + Clone,
@@ -53,7 +58,7 @@ impl VulkanDevice {
             },
             data.iter().cloned(),
         )
-        .map_err(VulkanError::ValidatedAllocateBufferError)?;
+            .map_err(VulkanError::ValidatedAllocateBufferError)?;
 
         let gpu_buffer = Buffer::new_slice::<T>(
             self.memory_allocator.clone(),
@@ -71,7 +76,7 @@ impl VulkanDevice {
             },
             data.len() as DeviceSize,
         )
-        .map_err(VulkanError::ValidatedAllocateBufferError)?;
+            .map_err(VulkanError::ValidatedAllocateBufferError)?;
 
         // Copy data from the CPU buffer to the Vulkan buffer
         let mut builder = AutoCommandBufferBuilder::primary(
@@ -82,7 +87,7 @@ impl VulkanDevice {
             self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
-        .map_err(VulkanError::ValidatedVulkanError)?;
+            .map_err(VulkanError::ValidatedVulkanError)?;
 
         builder
             .copy_buffer(CopyBufferInfo::buffers(
@@ -176,6 +181,12 @@ impl VulkanDevice {
     ) -> Result<Subbuffer<[u32]>> {
         Self::allocate_filled_subbuffer_raw(&self.command_buffer_allocator, &self.memory_allocator, queue, size, value)
     }
+
+    pub(super) fn allocate_buffer(&self, size: usize) -> Result<Arc<Buffer>> {
+        let buffer = self.allocate_subbuffer::<[u32]>(size)?;
+        Ok(buffer.buffer().clone())
+    }
+
 
     pub(super) fn allocate_filled_buffer(&self, size: usize, value: u32) -> Result<Arc<Buffer>> {
         let buffer = self.allocate_filled_subbuffer(self.queue.clone(), size, value)?;
