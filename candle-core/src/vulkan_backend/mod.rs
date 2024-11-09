@@ -78,7 +78,7 @@ impl From<String> for VulkanError {
 
 #[derive(Clone, Debug)]
 pub struct VulkanStorage {
-    buffer: Arc<Buffer>,
+    buffer: Option<Arc<Buffer>>,
     device: VulkanDevice,
     count: usize,
     dtype: DType,
@@ -86,7 +86,7 @@ pub struct VulkanStorage {
 }
 
 impl VulkanStorage {
-    pub fn new(buffer: Arc<Buffer>, device: VulkanDevice, count: usize, dtype: DType) -> Self {
+    pub fn new(buffer: Option<Arc<Buffer>>, device: VulkanDevice, count: usize, dtype: DType) -> Self {
         Self {
             buffer,
             device,
@@ -100,7 +100,10 @@ impl VulkanStorage {
         self.pending_future
             .sync_if_needed()
             .map_err(VulkanError::from)?;
-        self.device.to_cpu(self.buffer.clone())
+        match &self.buffer {
+            Some(buf) => self.device.to_cpu(buf.clone()),
+            None => Ok(vec![]),
+        }
     }
 }
 
@@ -425,56 +428,51 @@ impl BackendDevice for VulkanDevice {
     }
 
     fn zeros_impl(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        let size = (shape.elem_count() * dtype.size_in_bytes() + 3) / 4;
-        let buffer = self.allocate_filled_buffer(size, 0)?;
-        Ok(VulkanStorage::new(
-            buffer,
-            self.clone(),
-            shape.elem_count(),
-            dtype,
-        ))
+        let buffer = if shape.elem_count() > 0 {
+            Some(self.allocate_filled_buffer(
+                (shape.elem_count() * dtype.size_in_bytes() + 3) / 4,
+                0,
+            )?)
+        } else {
+            None
+        };
+        Ok(VulkanStorage::new(buffer, self.clone(), shape.elem_count(), dtype))
     }
 
     fn ones_impl(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let num_elements = shape.elem_count();
-
-        // Adjust the number of elements based on the dtype
-        let num_units = match dtype {
-            DType::F32 | DType::U32 => num_elements, // 1 unit per element
-            DType::F16 | DType::BF16 => (num_elements + 1) / 2, // 2 elements per unit
-            DType::U8 => (num_elements + 3) / 4,     // 4 elements per unit
-            DType::I64 | DType::F64 => num_elements, // 1 unit per element, but each unit is 64-bit
+        let buffer = if num_elements > 0 {
+            let num_units = match dtype {
+                DType::F32 | DType::U32 => num_elements, // 1 unit per element
+                DType::F16 | DType::BF16 => (num_elements + 1) / 2, // 2 elements per unit
+                DType::U8 => (num_elements + 3) / 4, // 4 elements per unit
+                DType::I64 | DType::F64 => num_elements, // 1 unit per element, but each unit is 64-bit
+            };
+            Some(match dtype {
+                DType::F32 => self.allocate_filled_buffer(num_units, 1.0f32.to_bits())?,
+                DType::U32 => self.allocate_filled_buffer(num_units, 1u32)?,
+                DType::F16 => {
+                    let bits = f16::from_f32(1.0).to_bits();
+                    self.allocate_filled_buffer(num_units, ((bits as u32) << 16) | (bits as u32))?
+                },
+                DType::BF16 => {
+                    let bits = bf16::from_f32(1.0).to_bits();
+                    self.allocate_filled_buffer(num_units, ((bits as u32) << 16) | (bits as u32))?
+                },
+                DType::U8 => {
+                    let byte = 1u8 as u32;
+                    self.allocate_filled_buffer(
+                        num_units,
+                        (byte << 24) | (byte << 16) | (byte << 8) | byte,
+                    )?
+                },
+                DType::I64 => self.allocate_filled_buffer_64(num_units, 1i64 as u64)?,
+                DType::F64 => self.allocate_filled_buffer_64(num_units, 1.0f64.to_bits())?,
+            })
+        } else {
+            None
         };
-
-        // Convert the value 1 to the appropriate u32 bit pattern based on dtype
-        let buffer = match dtype {
-            DType::F32 => self.allocate_filled_buffer(num_units, 1.0f32.to_bits())?,
-            DType::U32 => self.allocate_filled_buffer(num_units, 1u32)?,
-            DType::F16 => {
-                let bits = f16::from_f32(1.0).to_bits();
-                self.allocate_filled_buffer(num_units, ((bits as u32) << 16) | (bits as u32))?
-            }
-            DType::BF16 => {
-                let bits = bf16::from_f32(1.0).to_bits();
-                self.allocate_filled_buffer(num_units, ((bits as u32) << 16) | (bits as u32))?
-            }
-            DType::U8 => {
-                let byte = 1u8 as u32;
-                self.allocate_filled_buffer(
-                    num_units,
-                    (byte << 24) | (byte << 16) | (byte << 8) | byte,
-                )?
-            }
-            DType::I64 => self.allocate_filled_buffer_64(num_units, 1i64 as u64)?,
-            DType::F64 => self.allocate_filled_buffer_64(num_units, 1.0f64.to_bits())?,
-        };
-
-        Ok(VulkanStorage::new(
-            buffer,
-            self.clone(),
-            num_elements,
-            dtype,
-        ))
+        Ok(VulkanStorage::new(buffer, self.clone(), num_elements, dtype))
     }
 
     unsafe fn alloc_uninit(&self, _shape: &Shape, _dtype: DType) -> Result<Self::Storage> {
@@ -483,17 +481,32 @@ impl BackendDevice for VulkanDevice {
     }
 
     fn storage_from_cpu_storage(&self, storage: &CpuStorage) -> Result<Self::Storage> {
-        let (count, buffer) = match storage {
-            CpuStorage::U8(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::U32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::I64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::BF16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::F16(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::F32(storage) => (storage.len(), self.new_buffer_with_data(storage)),
-            CpuStorage::F64(storage) => (storage.len(), self.new_buffer_with_data(storage)),
+        let count = match storage {
+            CpuStorage::U8(s) => s.len(),
+            CpuStorage::U32(s) => s.len(),
+            CpuStorage::I64(s) => s.len(),
+            CpuStorage::BF16(s) => s.len(),
+            CpuStorage::F16(s) => s.len(),
+            CpuStorage::F32(s) => s.len(),
+            CpuStorage::F64(s) => s.len(),
         };
+
+        let buffer = if count > 0 {
+            Some(match storage {
+                CpuStorage::U8(s) => self.new_buffer_with_data(s)?,
+                CpuStorage::U32(s) => self.new_buffer_with_data(s)?,
+                CpuStorage::I64(s) => self.new_buffer_with_data(s)?,
+                CpuStorage::BF16(s) => self.new_buffer_with_data(s)?,
+                CpuStorage::F16(s) => self.new_buffer_with_data(s)?,
+                CpuStorage::F32(s) => self.new_buffer_with_data(s)?,
+                CpuStorage::F64(s) => self.new_buffer_with_data(s)?,
+            })
+        } else {
+            None
+        };
+
         Ok(Self::Storage::new(
-            buffer?,
+            buffer,
             self.clone(),
             count,
             storage.dtype(),
@@ -509,34 +522,44 @@ impl BackendDevice for VulkanDevice {
     ) -> Result<Self::Storage> {
         let name = match dtype {
             DType::F32 => "rand_normal_f32",
-            //DType::F16 => "rand_normal_f16",
-            //DType::BF16 => "rand_normal_bf16",
+            // DType::F16 => "rand_normal_f16",
+            // DType::BF16 => "rand_normal_bf16",
             dtype => crate::bail!("rand_uniform not implemented for {dtype:?}"),
         };
-        let buffer = self.allocate_subbuffer(shape.elem_count() * dtype.size_in_bytes())?;
+
+        let num_elements = shape.elem_count();
+        let buffer = if num_elements > 0 {
+            Some(self.allocate_subbuffer(num_elements * dtype.size_in_bytes())?)
+        } else {
+            None
+        };
+
         let storage = VulkanStorage::new(
-            buffer.buffer().clone(),
+            buffer.as_ref().map(|b| b.buffer().clone()),
             self.clone(),
-            shape.elem_count(),
+            num_elements,
             dtype,
         );
-        let seed = self.seed.lock().map_err(VulkanError::from)?;
-        // XXX
-        candle_vulkan_kernels::call_random_normal(
-            self.device.clone(),
-            self.queue.clone(),
-            &self.kernels,
-            self.command_buffer_allocator.clone(),
-            self.descriptor_set_allocator.clone(),
-            name,
-            ((high + low) / 2f64) as f32,
-            ((high - low) / 4f64) as f32,
-            shape.elem_count(),
-            seed.clone(),
-            buffer.clone(),
-            &storage.pending_future,
-        )
-        .map_err(VulkanError::from)?;
+
+        if let Some(buf) = &buffer {
+            let seed = self.seed.lock().map_err(VulkanError::from)?;
+            // XXX This is not mathematically sound, it should have it's own RNG kernel.
+            candle_vulkan_kernels::call_random_normal(
+                self.device.clone(),
+                self.queue.clone(),
+                &self.kernels,
+                self.command_buffer_allocator.clone(),
+                self.descriptor_set_allocator.clone(),
+                name,
+                ((high + low) / 2f64) as f32,
+                ((high - low) / 4f64) as f32,
+                num_elements,
+                seed.clone(),
+                buf.clone(),
+                &storage.pending_future,
+            )
+                .map_err(VulkanError::from)?;
+        }
 
         Ok(storage)
     }
@@ -550,33 +573,43 @@ impl BackendDevice for VulkanDevice {
     ) -> Result<Self::Storage> {
         let name = match dtype {
             DType::F32 => "rand_normal_f32",
-            //DType::F16 => "rand_normal_f16",
-            //DType::BF16 => "rand_normal_bf16",
-            dtype => crate::bail!("rand_uniform not implemented for {dtype:?}"),
+            // DType::F16 => "rand_normal_f16",
+            // DType::BF16 => "rand_normal_bf16",
+            dtype => crate::bail!("rand_normal not implemented for {dtype:?}"),
         };
-        let buffer = self.allocate_subbuffer(shape.elem_count() * dtype.size_in_bytes())?;
-        let storage = Self::Storage::new(
-            buffer.buffer().clone(),
+
+        let num_elements = shape.elem_count();
+        let buffer = if num_elements > 0 {
+            Some(self.allocate_subbuffer(num_elements * dtype.size_in_bytes())?)
+        } else {
+            None
+        };
+
+        let storage = VulkanStorage::new(
+            buffer.as_ref().map(|b| b.buffer().clone()),
             self.clone(),
-            shape.elem_count(),
+            num_elements,
             dtype,
         );
-        let seed = self.seed.lock().map_err(VulkanError::from)?;
-        candle_vulkan_kernels::call_random_normal(
-            self.device.clone(),
-            self.queue.clone(),
-            &self.kernels,
-            self.command_buffer_allocator.clone(),
-            self.descriptor_set_allocator.clone(),
-            name,
-            mean as f32,
-            stddev as f32,
-            shape.elem_count(),
-            seed.clone(),
-            buffer.clone(),
-            &storage.pending_future,
-        )
-        .map_err(VulkanError::from)?;
+
+        if let Some(buf) = &buffer {
+            let seed = self.seed.lock().map_err(VulkanError::from)?;
+            candle_vulkan_kernels::call_random_normal(
+                self.device.clone(),
+                self.queue.clone(),
+                &self.kernels,
+                self.command_buffer_allocator.clone(),
+                self.descriptor_set_allocator.clone(),
+                name,
+                mean as f32,
+                stddev as f32,
+                num_elements,
+                seed.clone(),
+                buf.clone(),
+                &storage.pending_future,
+            )
+                .map_err(VulkanError::from)?;
+        }
 
         Ok(storage)
     }
