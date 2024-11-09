@@ -475,9 +475,14 @@ impl BackendDevice for VulkanDevice {
         Ok(VulkanStorage::new(buffer, self.clone(), num_elements, dtype))
     }
 
-    unsafe fn alloc_uninit(&self, _shape: &Shape, _dtype: DType) -> Result<Self::Storage> {
-        // Implement uninitialized allocation
-        todo!()
+    unsafe fn alloc_uninit(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        let element_count = shape.elem_count();
+        let buffer = if element_count > 0 {
+            Some(self.new_buffer(shape.elem_count(), dtype)?)
+        } else {
+            None
+        };
+        Ok(VulkanStorage::new(buffer, self.clone(), element_count, dtype))
     }
 
     fn storage_from_cpu_storage(&self, storage: &CpuStorage) -> Result<Self::Storage> {
