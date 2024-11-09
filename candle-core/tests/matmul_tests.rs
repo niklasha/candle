@@ -114,7 +114,8 @@ test_device!(
     matmul_bf16,
     matmul_bf16_cpu,
     matmul_bf16_gpu,
-    matmul_bf16_metal
+    matmul_bf16_metal,
+    matmul_bf16_vulkan
 );
 test_device!(
     broadcast_matmul,
