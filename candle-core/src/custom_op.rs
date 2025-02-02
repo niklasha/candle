@@ -1,6 +1,6 @@
 use crate::op::{BackpropOp, Op};
 use crate::tensor::from_storage;
-use crate::{CpuStorage, CudaStorage, Layout, MetalStorage, Result, Shape, Tensor};
+use crate::{CpuStorage, CudaStorage, Layout, MetalStorage, Result, Shape, Tensor, VulkanStorage};
 use std::sync::Arc;
 
 /// Unary ops that can be defined in user-land.
@@ -29,6 +29,18 @@ pub trait CustomOp1 {
     ) -> Result<(MetalStorage, Shape)> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
+    /// offsets etc so the associated layout should be used to access it.
+    fn vulkan_fwd(
+        &self,
+        _storage: &VulkanStorage,
+        _layout: &Layout,
+    ) -> Result<(VulkanStorage, Shape)> {
+        Err(crate::Error::Vulkan(
+            format!("no vulkan implementation for {}", self.name()).into(),
         ))
     }
 
@@ -78,6 +90,20 @@ pub trait CustomOp2 {
     ) -> Result<(MetalStorage, Shape)> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
+    /// offsets etc so the associated layout should be used to access it.
+    fn vulkan_fwd(
+        &self,
+        _: &VulkanStorage,
+        _: &Layout,
+        _: &VulkanStorage,
+        _: &Layout,
+    ) -> Result<(VulkanStorage, Shape)> {
+        Err(crate::Error::Vulkan(
+            format!("no vulkan implementation for {}", self.name()).into(),
         ))
     }
 
@@ -136,6 +162,22 @@ pub trait CustomOp3 {
     ) -> Result<(MetalStorage, Shape)> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
+    /// offsets etc so the associated layout should be used to access it.
+    fn vulkan_fwd(
+        &self,
+        _: &VulkanStorage,
+        _: &Layout,
+        _: &VulkanStorage,
+        _: &Layout,
+        _: &VulkanStorage,
+        _: &Layout,
+    ) -> Result<(VulkanStorage, Shape)> {
+        Err(crate::Error::Vulkan(
+            format!("no vulkan implementation for {}", self.name()).into(),
         ))
     }
 
@@ -270,6 +312,14 @@ pub trait InplaceOp1 {
             format!("no metal implementation for {}", self.name()).into(),
         ))
     }
+
+    /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
+    /// offsets etc so the associated layout should be used to access it.
+    fn vulkan_fwd(&self, _storage: &mut VulkanStorage, _layout: &Layout) -> Result<()> {
+        Err(crate::Error::Vulkan(
+            format!("no vulkan implementation for {}", self.name()).into(),
+        ))
+    }
 }
 
 pub trait InplaceOp2 {
@@ -299,6 +349,20 @@ pub trait InplaceOp2 {
     ) -> Result<()> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
+    /// offsets etc so the associated layout should be used to access it.
+    fn vulkan_fwd(
+        &self,
+        _: &mut VulkanStorage,
+        _: &Layout,
+        _: &VulkanStorage,
+        _: &Layout,
+    ) -> Result<()> {
+        Err(crate::Error::Vulkan(
+            format!("no vulkan implementation for {}", self.name()).into(),
         ))
     }
 }
@@ -347,6 +411,22 @@ pub trait InplaceOp3 {
     ) -> Result<()> {
         Err(crate::Error::Metal(
             format!("no metal implementation for {}", self.name()).into(),
+        ))
+    }
+
+    /// The forward pass, as run on a metal gpu device. Note that the storage can use arbitrary strides,
+    /// offsets etc so the associated layout should be used to access it.
+    fn vulkan_fwd(
+        &self,
+        _: &mut VulkanStorage,
+        _: &Layout,
+        _: &VulkanStorage,
+        _: &Layout,
+        _: &VulkanStorage,
+        _: &Layout,
+    ) -> Result<()> {
+        Err(crate::Error::Vulkan(
+            format!("no vulkan implementation for {}", self.name()).into(),
         ))
     }
 }
