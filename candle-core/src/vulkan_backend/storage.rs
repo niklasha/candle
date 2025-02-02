@@ -1,9 +1,21 @@
 #![allow(dead_code)]
-use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{CpuStorage, DType, Error, Layout, Result, Shape};
 
-#[derive(Debug)]
-pub struct VulkanStorage;
+use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
+use crate::{CpuStorage, DType, Error, Layout, Result, Shape, VulkanDevice};
+use std::sync::Arc;
+use vulkano::buffer::Buffer;
+
+#[derive(Clone, Debug)]
+pub struct VulkanStorage {
+    /// The actual buffer containing the data.
+    buffer: Arc<Buffer>,
+    /// a reference to the device owning this buffer
+    device: VulkanDevice,
+    /// The count of allocated elements in the buffer
+    count: usize,
+    /// The dtype is kept since buffers are untyped.
+    dtype: DType,
+}
 
 macro_rules! fail {
     () => {
@@ -16,7 +28,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
 
     fn try_clone(&self, _: &Layout) -> Result<Self> {
         // Simple clone of storage (could be implemented as buffer copy later)
-        Ok(Self)
+        Ok(self.clone())
     }
 
     fn dtype(&self) -> DType {
@@ -24,7 +36,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
     }
 
     fn device(&self) -> &Self::Device {
-        &VulkanDevice
+        &self.device
     }
 
     fn to_cpu_storage(&self) -> Result<CpuStorage> {
@@ -107,7 +119,19 @@ impl crate::backend::BackendStorage for VulkanStorage {
         fail!()
     }
 
-    fn index_select(&self, _: &Self, _: &Layout, _: &Layout, _: usize) -> Result<Self> {
+    fn avg_pool2d(&self, _: &Layout, _: (usize, usize), _: (usize, usize)) -> Result<Self> {
+        fail!()
+    }
+
+    fn max_pool2d(&self, _: &Layout, _: (usize, usize), _: (usize, usize)) -> Result<Self> {
+        fail!()
+    }
+
+    fn upsample_nearest1d(&self, _: &Layout, _: usize) -> Result<Self> {
+        fail!()
+    }
+
+    fn upsample_nearest2d(&self, _: &Layout, _: usize, _: usize) -> Result<Self> {
         fail!()
     }
 
@@ -124,6 +148,10 @@ impl crate::backend::BackendStorage for VulkanStorage {
         _: &Layout,
         _: usize,
     ) -> Result<Self> {
+        fail!()
+    }
+
+    fn index_select(&self, _: &Self, _: &Layout, _: &Layout, _: usize) -> Result<Self> {
         fail!()
     }
 
@@ -163,22 +191,6 @@ impl crate::backend::BackendStorage for VulkanStorage {
         _: usize,
         _: usize,
     ) -> Result<()> {
-        fail!()
-    }
-
-    fn avg_pool2d(&self, _: &Layout, _: (usize, usize), _: (usize, usize)) -> Result<Self> {
-        fail!()
-    }
-
-    fn max_pool2d(&self, _: &Layout, _: (usize, usize), _: (usize, usize)) -> Result<Self> {
-        fail!()
-    }
-
-    fn upsample_nearest1d(&self, _: &Layout, _: usize) -> Result<Self> {
-        fail!()
-    }
-
-    fn upsample_nearest2d(&self, _: &Layout, _: usize, _: usize) -> Result<Self> {
         fail!()
     }
 }

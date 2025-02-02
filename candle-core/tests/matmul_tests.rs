@@ -109,18 +109,32 @@ fn mm_layout(device: &Device) -> Result<()> {
     Ok(())
 }
 
-test_device!(matmul, matmul_cpu, matmul_gpu, matmul_metal);
+test_device!(matmul, matmul_cpu, matmul_gpu, matmul_metal, matmul_vulkan);
 test_device!(
     matmul_bf16,
     matmul_bf16_cpu,
     matmul_bf16_gpu,
-    matmul_bf16_metal
+    matmul_bf16_metal,
+    matmul_bf16_vulkan
 );
 test_device!(
     broadcast_matmul,
     broadcast_matmul_cpu,
     broadcast_matmul_gpu,
-    broadcast_matmul_metal
+    broadcast_matmul_metal,
+    broadcast_matmul_vulkan
 );
-test_device!(squeeze_mm, squeeze_mm_cpu, squeeze_mm_gpu, squeeze_mm_metal);
-test_device!(mm_layout, mm_layout_cpu, mm_layout_gpu, mm_layout_metal);
+test_device!(
+    squeeze_mm,
+    squeeze_mm_cpu,
+    squeeze_mm_gpu,
+    squeeze_mm_metal,
+    squeeze_mm_vulkan
+);
+test_device!(
+    mm_layout,
+    mm_layout_cpu,
+    mm_layout_gpu,
+    mm_layout_metal,
+    mm_layout_vulkan
+);

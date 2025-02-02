@@ -1,10 +1,17 @@
 #![allow(dead_code)]
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
+use crate::vulkan_backend::storage::VulkanStorage;
 use crate::{CpuStorage, DType, Error, Layout, Result, Shape};
 
 #[derive(Debug, Clone)]
 pub struct VulkanDevice {
     pub(crate) gpu_id: usize,
+}
+
+impl VulkanDevice {
+    pub(crate) fn new(p0: usize) -> Result<Self> {
+        todo!()
+    }
 }
 
 macro_rules! fail {
