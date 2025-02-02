@@ -1,6 +1,7 @@
 #![allow(unused)]
 use super::GgmlDType;
-use crate::{Error, Result, VulkanDevice, VulkanStorage};
+use crate::dummy_vulkan_backend::{VulkanDevice, VulkanStorage};
+use crate::{Error, Result};
 
 pub struct QVulkanStorage {
     dtype: GgmlDType,
