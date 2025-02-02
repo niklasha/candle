@@ -5,22 +5,29 @@ use std::borrow::Cow;
 
 #[cfg(target_feature = "avx")]
 pub mod avx;
+#[cfg(feature = "cuda")]
+pub mod cuda;
 mod dummy_cuda;
 mod dummy_metal;
+mod dummy_vulkan;
 pub mod ggml_file;
 pub mod gguf_file;
 pub mod k_quants;
+#[cfg(not(feature = "cuda"))]
+mod cuda {
+    pub use super::dummy_cuda::*;
+}
 #[cfg(feature = "metal")]
 pub mod metal;
 #[cfg(not(feature = "metal"))]
 mod metal {
     pub use super::dummy_metal::*;
 }
-#[cfg(feature = "cuda")]
-pub mod cuda;
-#[cfg(not(feature = "cuda"))]
-mod cuda {
-    pub use super::dummy_cuda::*;
+#[cfg(feature = "vulkan")]
+pub mod vulkan;
+#[cfg(not(feature = "vulkan"))]
+mod vulkan {
+    pub use super::dummy_vulkan::*;
 }
 
 #[cfg(target_feature = "neon")]
@@ -28,6 +35,7 @@ pub mod neon;
 #[cfg(target_feature = "simd128")]
 pub mod simd128;
 pub mod utils;
+
 use half::f16;
 
 pub use k_quants::GgmlType;
@@ -44,13 +52,17 @@ impl Device {
                 let storage = dtype.cpu_zeros(elem_count);
                 Ok(QStorage::Cpu(storage))
             }
+            Device::Cuda(cuda) => {
+                let storage = cuda::QCudaStorage::zeros(cuda, elem_count, dtype)?;
+                Ok(QStorage::Cuda(storage))
+            }
             Device::Metal(metal) => {
                 let storage = metal::QMetalStorage::zeros(metal, elem_count, dtype)?;
                 Ok(QStorage::Metal(storage))
             }
-            Device::Cuda(cuda) => {
-                let storage = cuda::QCudaStorage::zeros(cuda, elem_count, dtype)?;
-                Ok(QStorage::Cuda(storage))
+            Device::Vulkan(vulkan) => {
+                let storage = vulkan::QVulkanStorage::zeros(vulkan, elem_count, dtype)?;
+                Ok(QStorage::Vulkan(storage))
             }
         }
     }
@@ -58,40 +70,45 @@ impl Device {
 
 pub enum QStorage {
     Cpu(Box<dyn QuantizedType>),
-    Metal(metal::QMetalStorage),
     Cuda(cuda::QCudaStorage),
+    Metal(metal::QMetalStorage),
+    Vulkan(vulkan::QVulkanStorage),
 }
 
 impl QStorage {
     fn block_size(&self) -> usize {
         match self {
             QStorage::Cpu(storage) => storage.block_size(),
-            QStorage::Metal(storage) => storage.dtype().block_size(),
             QStorage::Cuda(storage) => storage.dtype().block_size(),
+            QStorage::Metal(storage) => storage.dtype().block_size(),
+            QStorage::Vulkan(storage) => storage.dtype().block_size(),
         }
     }
 
     fn dtype(&self) -> GgmlDType {
         match self {
             QStorage::Cpu(storage) => storage.dtype(),
-            QStorage::Metal(storage) => storage.dtype(),
             QStorage::Cuda(storage) => storage.dtype(),
+            QStorage::Metal(storage) => storage.dtype(),
+            QStorage::Vulkan(storage) => storage.dtype(),
         }
     }
 
     fn device(&self) -> Device {
         match self {
             QStorage::Cpu(_storage) => Device::Cpu,
-            QStorage::Metal(storage) => Device::Metal(storage.device().clone()),
             QStorage::Cuda(storage) => Device::Cuda(storage.device().clone()),
+            QStorage::Metal(storage) => Device::Metal(storage.device().clone()),
+            QStorage::Vulkan(storage) => Device::Vulkan(storage.device().clone()),
         }
     }
 
     fn size_in_bytes(&self) -> usize {
         match self {
             QStorage::Cpu(storage) => storage.storage_size_in_bytes(),
-            QStorage::Metal(storage) => storage.storage_size_in_bytes(),
             QStorage::Cuda(storage) => storage.storage_size_in_bytes(),
+            QStorage::Metal(storage) => storage.storage_size_in_bytes(),
+            QStorage::Vulkan(storage) => storage.storage_size_in_bytes(),
         }
     }
 
@@ -100,8 +117,9 @@ impl QStorage {
             (QStorage::Cpu(storage), Storage::Cpu(src)) => {
                 storage.from_float(src.as_slice::<f32>()?)?;
             }
-            (QStorage::Metal(storage), Storage::Metal(src)) => storage.quantize(src)?,
             (QStorage::Cuda(storage), Storage::Cuda(src)) => storage.quantize(src)?,
+            (QStorage::Metal(storage), Storage::Metal(src)) => storage.quantize(src)?,
+            (QStorage::Vulkan(storage), Storage::Vulkan(src)) => storage.quantize(src)?,
             _ => crate::bail!("Invalid dequantize storage locations do not match"),
         }
         Ok(())
@@ -110,8 +128,9 @@ impl QStorage {
     fn dequantize(&self, elem_count: usize) -> Result<Storage> {
         match self {
             QStorage::Cpu(storage) => Ok(Storage::Cpu(storage.dequantize(elem_count)?)),
-            QStorage::Metal(storage) => Ok(Storage::Metal(storage.dequantize(elem_count)?)),
             QStorage::Cuda(storage) => Ok(Storage::Cuda(storage.dequantize(elem_count)?)),
+            QStorage::Metal(storage) => Ok(Storage::Metal(storage.dequantize(elem_count)?)),
+            QStorage::Vulkan(storage) => Ok(Storage::Vulkan(storage.dequantize(elem_count)?)),
         }
     }
 
@@ -123,7 +142,7 @@ impl QStorage {
                 let data = unsafe { std::slice::from_raw_parts(data_ptr, size_in_bytes) };
                 Ok(Cow::from(data))
             }
-            QStorage::Metal(_) | QStorage::Cuda(_) => {
+            QStorage::Metal(_) | QStorage::Cuda(_) | QStorage::Vulkan(_) => {
                 crate::bail!("not implemented");
             }
         }
@@ -490,7 +509,9 @@ impl crate::CustomOp1 for QTensor {
         #[allow(clippy::infallible_destructuring_match)]
         let self_storage = match &self.storage {
             QStorage::Cpu(storage) => storage,
-            QStorage::Metal(_) | QStorage::Cuda(_) => crate::bail!("Invalid storage"),
+            QStorage::Cuda(_) | QStorage::Metal(_) | QStorage::Vulkan(_) => {
+                crate::bail!("Invalid storage")
+            }
         };
         let slice = storage.as_slice::<f32>()?;
         let slice = &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
