@@ -1,20 +1,44 @@
 #![allow(dead_code)]
 
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{CpuStorage, DType, Error, Layout, Result, Shape, VulkanDevice};
+use crate::{CpuStorage, DType, Error, Layout, Result, Shape, VulkanDevice, VulkanError};
 use std::sync::Arc;
-use vulkano::buffer::Buffer;
+use vulkano::buffer::{Buffer, BufferContents, Subbuffer};
 
 #[derive(Clone, Debug)]
 pub struct VulkanStorage {
-    /// The actual buffer containing the data.
-    buffer: Arc<Buffer>,
+    /// The actual subbuffer containing the data.  It is type erased since VulkanStorage is untyped.
+    /// u32 is used because fill_buffer works with u32, which makes it easier to fill the buffer.
+    buffer: Arc<Subbuffer<[u32]>>,
     /// a reference to the device owning this buffer
     device: VulkanDevice,
     /// The count of allocated elements in the buffer
     count: usize,
     /// The dtype is kept since buffers are untyped.
     dtype: DType,
+}
+
+impl VulkanStorage {
+    pub(crate) fn new(
+        buffer: Subbuffer<[u32]>,
+        device: VulkanDevice,
+        count: usize,
+        dtype: DType,
+    ) -> Self {
+        Self {
+            buffer: Arc::new(buffer),
+            device,
+            count,
+            dtype,
+        }
+    }
+
+    pub fn to_cpu<T: BufferContents + Clone + Copy + Send>(&self) -> Result<Vec<T>> {
+        // self.pending_future
+        //     .sync_if_needed()
+        //     .map_err(VulkanError::from)?;
+        self.device.to_cpu(self.buffer.clone())
+    }
 }
 
 macro_rules! fail {
@@ -32,7 +56,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
     }
 
     fn dtype(&self) -> DType {
-        fail!()
+        self.dtype
     }
 
     fn device(&self) -> &Self::Device {
@@ -40,7 +64,15 @@ impl crate::backend::BackendStorage for VulkanStorage {
     }
 
     fn to_cpu_storage(&self) -> Result<CpuStorage> {
-        fail!()
+        match self.dtype {
+            DType::U8 => Ok(CpuStorage::U8(self.to_cpu()?)),
+            DType::U32 => Ok(CpuStorage::U32(self.to_cpu()?)),
+            DType::I64 => Ok(CpuStorage::I64(self.to_cpu()?)),
+            DType::F16 => Ok(CpuStorage::F16(self.to_cpu()?)),
+            DType::BF16 => Ok(CpuStorage::BF16(self.to_cpu()?)),
+            DType::F32 => Ok(CpuStorage::F32(self.to_cpu()?)),
+            DType::F64 => Ok(CpuStorage::F64(self.to_cpu()?)),
+        }
     }
 
     fn affine(&self, _: &Layout, _: f64, _: f64) -> Result<Self> {

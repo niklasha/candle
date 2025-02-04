@@ -5,6 +5,10 @@ fn zeros(device: &Device) -> Result<()> {
     let (dim1, dim2) = tensor.dims2()?;
     assert_eq!(dim1, 5);
     assert_eq!(dim2, 2);
+    assert_eq!(
+        tensor.to_vec2::<f32>()?,
+        [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
+    );
     Ok(())
 }
 
