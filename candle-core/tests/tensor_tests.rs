@@ -1488,7 +1488,7 @@ fn zero_dim(device: &Device) -> Result<()> {
 test_device!(zeros, zeros_cpu, zeros_gpu, zeros_metal, zeros_vulkan);
 test_device!(ones, ones_cpu, ones_gpu, ones_metal, ones_vulkan);
 test_device!(full, full_cpu, full_gpu, full_metal, full_vulkam);
-test_device!(arange, arange_cpu, arange_gpu, arange_metal, arane_vulkan);
+test_device!(arange, arange_cpu, arange_gpu, arange_metal, arange_vulkan);
 test_device!(
     add_mul,
     add_mul_cpu,
