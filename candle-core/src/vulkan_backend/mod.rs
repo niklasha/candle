@@ -5,7 +5,7 @@ pub use device::VulkanDevice;
 mod storage;
 pub use storage::VulkanStorage;
 
-use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
+use crate::op::{BinaryOpT, UnaryOpT};
 
 #[derive(thiserror::Error, Debug)]
 pub enum VulkanError {

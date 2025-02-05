@@ -35,6 +35,7 @@ ug-metal = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true}
 yoke = { workspace = true }
 zip = { workspace = true }
+bytemuck = "1.19.0"
 
 [dev-dependencies]
 anyhow = { workspace = true }

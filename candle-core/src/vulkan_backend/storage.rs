@@ -1,15 +1,15 @@
 #![allow(dead_code)]
 
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{CpuStorage, DType, Error, Layout, Result, Shape, VulkanDevice, VulkanError};
+use crate::{CpuStorage, DType, Layout, Result, VulkanDevice};
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferContents, Subbuffer};
 
 #[derive(Clone, Debug)]
 pub struct VulkanStorage {
     /// The actual subbuffer containing the data.  It is type erased since VulkanStorage is untyped.
-    /// u32 is used because fill_buffer works with u32, which makes it easier to fill the buffer.
-    buffer: Arc<Subbuffer<[u32]>>,
+    /// It is an Option, since a zero-sized buffer is invalid in Vulkan, but not in Candle, so we use None representing that case.
+    buffer: Arc<Option<Subbuffer<[u8]>>>,
     /// a reference to the device owning this buffer
     device: VulkanDevice,
     /// The count of allocated elements in the buffer
@@ -20,7 +20,7 @@ pub struct VulkanStorage {
 
 impl VulkanStorage {
     pub(crate) fn new(
-        buffer: Subbuffer<[u32]>,
+        buffer: Option<Subbuffer<[u8]>>,
         device: VulkanDevice,
         count: usize,
         dtype: DType,
