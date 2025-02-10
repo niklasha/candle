@@ -6,7 +6,7 @@ use crate::{CpuStorage, DType, Result, Shape, VulkanError, VulkanStorage};
 use bytemuck::Pod;
 use half::{bf16, f16};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vulkano::buffer::allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::{
@@ -38,7 +38,7 @@ pub struct VulkanDevice {
     device: Arc<Device>,
     pub(crate) queue: Arc<Queue>,
     memory_allocator: Arc<StandardMemoryAllocator>,
-    buffer_allocator: Arc<SubbufferAllocator>,
+    buffer_allocator: Arc<Mutex<SubbufferAllocator>>,
     pub(crate) command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     pub(crate) descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     //    zero_init_pipeline: Arc<ComputePipeline>,
@@ -544,6 +544,8 @@ impl VulkanDevice {
 
         Ok(Some(
             self.buffer_allocator
+                .lock()
+                .map_err(|e| VulkanError::Message(format!("lock error: {}", e)))?
                 .allocate(
                     DeviceLayout::from_size_alignment(
                         buffer_size as DeviceSize,
@@ -571,15 +573,15 @@ macro_rules! cast_shaders {
 
                         layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
                         layout(set = 0, binding = 0) buffer Input {
-                            float input_data[];
+                            SRC_TYPE input_data[];
                         };
                         layout(set = 0, binding = 1) buffer Output {
-                            float16_t output_data[];
+                            DST_TYPE output_data[];
                         };
 
                         void main() {
                             uint idx = gl_GlobalInvocationID.x;
-                            output_data[idx] = float16_t(input_data[idx]);
+                            output_data[idx] = DST_TYPE(input_data[idx]);
                         }",
                     define: [("SRC_TYPE", $src), ("DST_TYPE", $dst)]
                 }
@@ -633,7 +635,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             .ok_or(VulkanError::Message("no queues found".to_string()))?;
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-        let buffer_allocator = Arc::new(SubbufferAllocator::new(
+        let buffer_allocator = Arc::new(Mutex::new(SubbufferAllocator::new(
             memory_allocator.clone(),
             SubbufferAllocatorCreateInfo {
                 arena_size: 64 * 1024 * 1024,
@@ -643,7 +645,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE, // XXX actually the default
                 ..Default::default()
             },
-        ));
+        )));
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             device.clone(),
             StandardCommandBufferAllocatorCreateInfo::default(),
@@ -685,7 +687,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
         let cast_pipelines = {
             cast_shaders!(
                 (float_to_half, "float", "float16_t"),
-                (half_to_float, "float16_t", "float")
+                (half_to_float, "float16_t", "float"),
+                (uint_to_float, "uint", "float")
             );
             let shaders = [
                 float_to_half::load(device.clone())
@@ -697,6 +700,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
                         e
                     })?,
                 half_to_float::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
+                uint_to_float::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
             ];
             // Create the pipelines
             shaders
