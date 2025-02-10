@@ -33,6 +33,7 @@ ug = { workspace = true }
 ug-cuda = { workspace = true, optional = true }
 ug-metal = { workspace = true, optional = true }
 vulkano = { workspace = true, optional = true}
+vulkano-shaders = { workspace = true, optional = true}
 yoke = { workspace = true }
 zip = { workspace = true }
 bytemuck = "1.19.0"
@@ -50,7 +51,7 @@ cudnn = ["cuda", "cudarc/cudnn"]
 mkl = ["dep:libc", "dep:intel-mkl-src"]
 accelerate = ["dep:libc", "dep:accelerate-src"]
 metal = ["dep:metal", "dep:candle-metal-kernels", "dep:ug-metal"]
-vulkan = ["dep:vulkano", "dep:candle-vulkan-kernels"]
+vulkan = ["dep:vulkano", "dep:vulkano-shaders", "dep:candle-vulkan-kernels"]
 
 [[bench]]
 name = "bench_main"
