@@ -5,8 +5,6 @@ pub use device::VulkanDevice;
 mod storage;
 pub use storage::VulkanStorage;
 
-use crate::op::{BinaryOpT, UnaryOpT};
-
 #[derive(thiserror::Error, Debug)]
 pub enum VulkanError {
     #[error("{0}")]
@@ -25,6 +23,10 @@ pub enum VulkanError {
     MemoryAllocatorError(#[from] vulkano::memory::allocator::MemoryAllocatorError),
     #[error(transparent)]
     CommandBufferExecError(#[from] vulkano::command_buffer::CommandBufferExecError),
+    #[error(transparent)]
+    IntoPipelineLayoutCreateInfoError(
+        #[from] vulkano::pipeline::layout::IntoPipelineLayoutCreateInfoError,
+    ),
 }
 
 impl From<String> for VulkanError {
