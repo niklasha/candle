@@ -70,6 +70,7 @@ microphone = ["cpal", "rubato"]
 encodec = ["cpal", "symphonia", "rubato"]
 mimi = ["cpal", "symphonia", "rubato"]
 depth_anything_v2 = ["palette", "enterpolation"]
+vulkan = ["candle/vulkan", "candle-nn/vulkan"]
 
 [[example]]
 name = "llama_multiprocess"

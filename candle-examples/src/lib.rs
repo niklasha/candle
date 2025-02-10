@@ -4,7 +4,7 @@ pub mod coco_classes;
 pub mod imagenet;
 pub mod token_output_stream;
 pub mod wav;
-use candle::utils::{cuda_is_available, metal_is_available};
+use candle::utils::{cuda_is_available, metal_is_available, vulkan_is_available};
 use candle::{Device, Result, Tensor};
 
 pub fn device(cpu: bool) -> Result<Device> {
@@ -14,16 +14,18 @@ pub fn device(cpu: bool) -> Result<Device> {
         Ok(Device::new_cuda(0)?)
     } else if metal_is_available() {
         Ok(Device::new_metal(0)?)
+    } else if vulkan_is_available() {
+        Ok(Device::new_vulkan(0)?)
     } else {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             println!(
-                "Running on CPU, to run on GPU(metal), build this example with `--features metal`"
+                "Running on CPU, to run on GPU(metal), build this example with `--features metal`, to run on GPU(vulkan), use `--features vulkan`"
             );
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
-            println!("Running on CPU, to run on GPU, build this example with `--features cuda`");
+            println!("Running on CPU, to run on GPU(cuda), build this example with `--features cuda`, to run on GPU(vulkan), use `--features vulkan`");
         }
         Ok(Device::Cpu)
     }

@@ -144,14 +144,6 @@ impl VulkanStorage {
     ) -> Result<Self> {
         let dtype = self.dtype();
 
-        // Only handle F32 for now
-        if dtype != DType::F32 && dtype != DType::F16 {
-            return Err(VulkanError::Message(format!(
-                "Unsupported dtype: {:?}",
-                dtype
-            )))?;
-        }
-
         if let Some(buffer) = (*self.buffer).clone() {
             let elem_count = layout.shape().elem_count();
             let device = self.device();
@@ -437,6 +429,9 @@ impl crate::backend::BackendStorage for VulkanStorage {
             }
             (DType::F16, DType::F32) => {
                 self.unary_op_impl(layout, &self.device.cast_pipelines[1], dtype)
+            }
+            (DType::U32, DType::F32) => {
+                self.unary_op_impl(layout, &self.device.cast_pipelines[2], dtype)
             }
             _ => fail!(),
         }
