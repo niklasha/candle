@@ -20,7 +20,7 @@ use vulkano::descriptor_set::allocator::{
 };
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::device::{
-    Device, DeviceCreateInfo, DeviceExtensions, Features, Queue, QueueCreateInfo,
+    Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
 };
 use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{
@@ -404,10 +404,10 @@ impl VulkanDevice {
 
             // Copy data from the Vulkan buffer to the CPU buffer
             let mut builder = AutoCommandBufferBuilder::primary(
-                &StandardCommandBufferAllocator::new(
+                Arc::new(StandardCommandBufferAllocator::new(
                     self.device.clone(),
                     StandardCommandBufferAllocatorCreateInfo::default(),
-                ),
+                )),
                 self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
@@ -455,7 +455,7 @@ impl VulkanDevice {
 
         if let Some(ref buffer) = buffer {
             let mut builder = AutoCommandBufferBuilder::primary(
-                &self.command_buffer_allocator,
+                self.command_buffer_allocator.clone(),
                 self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
@@ -610,9 +610,9 @@ impl crate::backend::BackendDevice for VulkanDevice {
             khr_storage_buffer_storage_class: true,
             ..DeviceExtensions::empty()
         };
-        let required_features = Features {
+        let required_features = DeviceFeatures {
             storage_buffer16_bit_access: true,
-            ..Features::empty()
+            ..DeviceFeatures::empty()
         };
 
         let (device, mut queues) = Device::new(
@@ -896,10 +896,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "max"          => max_shader,
         );
 
-        affine_elu_shaders!(
-            (affine_shader, "affine_op"),
-            (elu_shader, "elu_op"),
-        );
+        affine_elu_shaders!((affine_shader, "affine_op"), (elu_shader, "elu_op"),);
 
         macro_rules! load_affine_elu_pipelines {
             ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
@@ -934,7 +931,6 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "affine" => affine_shader,
             "elu" => elu_shader,
         );
-
 
         Ok(Self {
             ordinal,

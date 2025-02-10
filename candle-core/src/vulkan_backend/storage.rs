@@ -7,11 +7,10 @@ use crate::{CpuStorage, DType, Layout, Result, VulkanDevice, VulkanError};
 use candle_vulkan_kernels::Source;
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferContents, Subbuffer};
-use vulkano::command_buffer::ResourceInCommand::DescriptorSet;
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryCommandBufferAbstract,
 };
-use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint};
 use vulkano::sync::GpuFuture;
 
@@ -60,7 +59,7 @@ impl VulkanStorage {
         let device = self.device();
 
         let mut builder = AutoCommandBufferBuilder::primary(
-            &device.command_buffer_allocator,
+            device.command_buffer_allocator.clone(),
             device.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
@@ -80,24 +79,26 @@ impl VulkanStorage {
             )
             .collect::<Vec<_>>();
 
-        builder
-            .bind_pipeline_compute(pipeline.clone())
-            .map_err(VulkanError::ValidationError)?
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                pipeline.layout().clone(),
-                0,
-                PersistentDescriptorSet::new(
-                    &device.descriptor_set_allocator,
-                    pipeline.layout().set_layouts()[0].clone(),
-                    bindings,
-                    [],
+        unsafe {
+            builder
+                .bind_pipeline_compute(pipeline.clone())
+                .map_err(VulkanError::ValidationError)?
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    pipeline.layout().clone(),
+                    0,
+                    DescriptorSet::new(
+                        device.descriptor_set_allocator.clone(),
+                        pipeline.layout().set_layouts()[0].clone(),
+                        bindings,
+                        [],
+                    )
+                    .map_err(VulkanError::ValidatedVulkanError)?,
                 )
-                .map_err(VulkanError::ValidatedVulkanError)?,
-            )
-            .map_err(VulkanError::ValidationError)?
-            .dispatch([(elem_count as u32 + 255) / 256, 1, 1])
-            .map_err(|e| VulkanError::ValidationError(e.into()))?;
+                .map_err(VulkanError::ValidationError)?
+                .dispatch([(elem_count as u32 + 255) / 256, 1, 1])
+                .map_err(|e| VulkanError::ValidationError(e.into()))?;
+        }
 
         // Execute and sync
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
@@ -239,14 +240,13 @@ impl VulkanStorage {
         }
     }
 
-
     fn affine_elu_op_impl(
         &self,
         layout: &Layout,
         pipeline: &Arc<ComputePipeline>,
-        mul: f64,    // used only for affine
-        add: f64,    // used only for affine
-        alpha: f64,  // used only for ELU
+        mul: f64,   // used only for affine
+        add: f64,   // used only for affine
+        alpha: f64, // used only for ELU
     ) -> Result<Self> {
         let elem_count = layout.shape().elem_count();
         let device = self.device();
@@ -272,11 +272,11 @@ impl VulkanStorage {
         let rank = shape_slice.rank() as u32;
 
         let mut builder = AutoCommandBufferBuilder::primary(
-            &device.command_buffer_allocator,
+            device.command_buffer_allocator.clone(),
             device.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
-            .map_err(VulkanError::ValidatedVulkanError)?;
+        .map_err(VulkanError::ValidatedVulkanError)?;
 
         let input_buffer = (*self.buffer)
             .clone()
@@ -290,13 +290,13 @@ impl VulkanStorage {
             WriteDescriptorSet::buffer(1, output_buffer),
         ];
 
-        let pds = PersistentDescriptorSet::new(
-            &device.descriptor_set_allocator,
+        let pds = DescriptorSet::new(
+            device.descriptor_set_allocator.clone(),
             pipeline.layout().set_layouts()[0].clone(),
             bindings,
             [],
         )
-            .map_err(VulkanError::ValidatedVulkanError)?;
+        .map_err(VulkanError::ValidatedVulkanError)?;
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -319,20 +319,22 @@ impl VulkanStorage {
             alpha: alpha_f32,
         };
 
-        builder
-            .bind_pipeline_compute(pipeline.clone())
-            .map_err(VulkanError::ValidationError)?
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                pipeline.layout().clone(),
-                0,
-                pds,
-            )
-            .map_err(VulkanError::ValidationError)?
-            .push_constants(pipeline.layout().clone(), 0, push_constants)
-            .map_err(VulkanError::ValidationError)?
-            .dispatch([((elem_count as u32) + 255) / 256, 1, 1])
-            .map_err(VulkanError::ValidationError)?;
+        unsafe {
+            builder
+                .bind_pipeline_compute(pipeline.clone())
+                .map_err(VulkanError::ValidationError)?
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    pipeline.layout().clone(),
+                    0,
+                    pds,
+                )
+                .map_err(VulkanError::ValidationError)?
+                .push_constants(pipeline.layout().clone(), 0, push_constants)
+                .map_err(VulkanError::ValidationError)?
+                .dispatch([((elem_count as u32) + 255) / 256, 1, 1])
+                .map_err(VulkanError::ValidationError)?;
+        }
 
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
         let future = command_buffer
@@ -386,7 +388,10 @@ impl crate::backend::BackendStorage for VulkanStorage {
         if self.dtype != DType::F32 {
             fail!()
         }
-        let pipeline = self.device.affine_elu_pipelines.get("affine")
+        let pipeline = self
+            .device
+            .affine_elu_pipelines
+            .get("affine")
             .ok_or_else(|| VulkanError::Message("No affine pipeline".to_string()))?;
         self.affine_elu_op_impl(layout, pipeline, mul, add, 0.0)
     }
@@ -399,7 +404,10 @@ impl crate::backend::BackendStorage for VulkanStorage {
         if self.dtype != DType::F32 {
             fail!()
         }
-        let pipeline = self.device.affine_elu_pipelines.get("elu")
+        let pipeline = self
+            .device
+            .affine_elu_pipelines
+            .get("elu")
             .ok_or_else(|| VulkanError::Message("No elu pipeline".to_string()))?;
         self.affine_elu_op_impl(layout, pipeline, 0.0, 0.0, alpha)
     }
