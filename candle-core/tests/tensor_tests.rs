@@ -168,6 +168,10 @@ fn unary_op(device: &Device) -> Result<()> {
     let data = &[[-3f32, 1., 4., -0.1, 0.5], [2.7, -1.8, -0.28, 1.8, 2.8]];
     let tensor = Tensor::new(data, device)?;
     assert_eq!(
+        test_utils::to_vec2_round(&tensor.neg()?, 4)?,
+        [[3.0, -1.0, -4.0, 0.1, -0.5], [-2.7, 1.8, 0.28, -1.8, -2.8]]
+    );
+    assert_eq!(
         test_utils::to_vec2_round(&tensor.gelu()?, 4)?,
         [
             [-0.0036, 0.8412, 3.9999, -0.046, 0.3457],
