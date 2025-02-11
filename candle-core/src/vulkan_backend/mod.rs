@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 
 mod device;
+
 pub use device::VulkanDevice;
+use std::fmt;
 mod storage;
+use crate::op::CmpOp;
 pub use storage::VulkanStorage;
 
 #[derive(thiserror::Error, Debug)]
