@@ -118,7 +118,6 @@ impl VulkanStorage {
                 .map_err(|e| VulkanError::ValidationError(e.into()))?;
         }
 
-        // Execute and sync
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
         let future = command_buffer
             .execute(device.queue.clone())
@@ -160,19 +159,50 @@ impl VulkanStorage {
         pipeline: &Arc<ComputePipeline>,
         target_dtype: DType,
     ) -> Result<Self> {
-        let dtype = self.dtype();
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            base: u32,
+            rank: u32,
+            _pad0: [u32; 2],
+            shape: [u32; 4],
+            stride: [u32; 4],
+        }
 
         if let Some(buffer) = (*self.buffer).clone() {
             let elem_count = layout.shape().elem_count();
             let device = self.device();
             let new_storage = unsafe { device.alloc_uninit(layout.shape(), target_dtype)? };
 
+            // Extract the full shape and stride. We assume a maximum rank of 4.
+            let shape_slice = layout.shape();
+            let stride_slice = layout.stride();
+            let mut shape_arr = [1u32; 4];
+            let mut stride_arr = [1u32; 4];
+            for i in 0..shape_slice.rank().min(4) {
+                shape_arr[i] = (shape_slice.dim(i).unwrap())
+                    .try_into()
+                    .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
+            }
+            for i in 0..stride_slice.len().min(4) {
+                stride_arr[i] = (*stride_slice.get(i).unwrap()) as u32;
+            }
+            let rank = shape_slice.rank() as u32;
+            let base = layout.start_offset() as u32;
+
+            let push_constants = PushConstants {
+                base,
+                rank,
+                _pad0: [0; 2],
+                shape: shape_arr,
+                stride: stride_arr,
+            };
             self.execute_compute_kernel(
                 pipeline,
                 vec![buffer],
                 vec![(*new_storage.buffer).clone().unwrap()],
                 elem_count,
-                (),
+                push_constants,
             )?;
 
             Ok(new_storage)
@@ -189,6 +219,21 @@ impl VulkanStorage {
         rhs_layout: &Layout,
         pipeline: &Arc<ComputePipeline>,
     ) -> Result<Self> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            a_base: u32,
+            a_rank: u32,
+            _pad0: [u32; 2],
+            a_shape: [u32; 4],
+            a_stride: [u32; 4],
+            b_base: u32,
+            b_rank: u32,
+            _pad1: [u32; 2],
+            b_shape: [u32; 4],
+            b_stride: [u32; 4],
+        }
+
         let lhs_dtype = self.dtype();
         let rhs_dtype = rhs.dtype();
 
@@ -207,12 +252,53 @@ impl VulkanStorage {
             let device = self.device();
             let new_storage = unsafe { device.alloc_uninit(layout.shape(), lhs_dtype)? };
 
+            let a_shape_slice = layout.shape();
+            let a_stride_slice = layout.stride();
+            let mut a_shape_arr = [1u32; 4];
+            let mut a_stride_arr = [1u32; 4];
+            for i in 0..a_shape_slice.rank().min(4) {
+                a_shape_arr[i] = (a_shape_slice.dim(i).unwrap())
+                    .try_into()
+                    .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
+            }
+            for i in 0..a_stride_slice.len().min(4) {
+                a_stride_arr[i] = (*a_stride_slice.get(i).unwrap()) as u32;
+            }
+            let a_rank = a_shape_slice.rank() as u32;
+            let a_base = layout.start_offset() as u32;
+            let b_shape_slice = rhs_layout.shape();
+            let b_stride_slice = rhs_layout.stride();
+            let mut b_shape_arr = [1u32; 4];
+            let mut b_stride_arr = [1u32; 4];
+            for i in 0..b_shape_slice.rank().min(4) {
+                b_shape_arr[i] = (b_shape_slice.dim(i).unwrap())
+                    .try_into()
+                    .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
+            }
+            for i in 0..b_stride_slice.len().min(4) {
+                b_stride_arr[i] = (*b_stride_slice.get(i).unwrap()) as u32;
+            }
+            let b_rank = b_shape_slice.rank() as u32;
+            let b_base = rhs_layout.start_offset() as u32;
+
+            let push_constants = PushConstants {
+                a_base,
+                a_rank,
+                _pad0: [0; 2],
+                a_shape: a_shape_arr,
+                a_stride: a_stride_arr,
+                b_base,
+                b_rank,
+                _pad1: [0; 2],
+                b_shape: b_shape_arr,
+                b_stride: b_stride_arr,
+            };
             self.execute_compute_kernel(
                 pipeline,
                 vec![lhs_buffer, rhs_buffer],
                 vec![(*new_storage.buffer).clone().unwrap()],
                 elem_count,
-                (),
+                push_constants,
             )?;
 
             Ok(new_storage)
@@ -292,6 +378,7 @@ impl VulkanStorage {
             stride_arr[i] = (*stride_slice.get(i).unwrap()) as u32;
         }
         let rank = shape_slice.rank() as u32;
+        let base = layout.start_offset() as u32;
 
         let mut builder = AutoCommandBufferBuilder::primary(
             device.command_buffer_allocator.clone(),
@@ -323,8 +410,9 @@ impl VulkanStorage {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct AffinePushConstants {
+            base: u32,
             rank: u32,
-            _pad0: [u32; 3],
+            _pad0: [u32; 2],
             shape: [u32; 4],
             stride: [u32; 4],
             mul: f32,
@@ -332,8 +420,9 @@ impl VulkanStorage {
             alpha: f32,
         }
         let push_constants = AffinePushConstants {
+            base,
             rank,
-            _pad0: [0; 3],
+            _pad0: [0; 2],
             shape: shape_arr,
             stride: stride_arr,
             mul: mul_f32,
@@ -796,8 +885,9 @@ impl crate::backend::BackendStorage for VulkanStorage {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct CopyStridedSrcPushConstants {
+            base: u32,
             rank: u32,
-            _pad0: [u32; 3],
+            _pad0: [u32; 2],
             shape: [u32; 4],
             stride: [u32; 4],
             dst_offset: u32,
@@ -817,9 +907,11 @@ impl crate::backend::BackendStorage for VulkanStorage {
             stride_arr[i] = (*stride_slice.get(i).unwrap()) as u32;
         }
         let rank = shape_slice.rank() as u32;
+        let base = layout.start_offset() as u32;
         let push_constants = CopyStridedSrcPushConstants {
+            base,
             rank,
-            _pad0: [0; 3],
+            _pad0: [0; 2],
             shape: shape_arr,
             stride: stride_arr,
             dst_offset: dst_offset as u32,
