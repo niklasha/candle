@@ -384,6 +384,9 @@ impl VulkanStorage {
         dispatch_dims: [u32; 3],
         pipeline: &Arc<ComputePipeline>,
     ) -> Result<()> {
+        if self.buffer.is_none() {
+            return Ok(());
+        }
         let device = self.device();
         // Obtain source and destination buffers without moving out of the Arc.
         let src_buffer = self
