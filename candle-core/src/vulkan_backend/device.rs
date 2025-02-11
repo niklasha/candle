@@ -83,12 +83,52 @@ macro_rules! unary_shaders {
                         layout(set = 0, binding = 1) buffer OutputBuffer {
                             OUTER_TYPE output_data[];
                         };
+                        layout(push_constant) uniform PushConstants {
+                            uint base;
+                            uint rank;         // number of dimensions
+                            uvec4 shape;       // padded shape (unused dimensions set to 1)
+                            uvec4 stride;      // padded stride (unused dimensions set to 1)
+                        } pc;
 
                         const INNER_TYPE HALF = INNER_TYPE(0.5);
                         const INNER_TYPE ONE = INNER_TYPE(1.0);
 
+                        // This function converts a linear index to a physical index using the full
+                        // multi-dimensional layout. We assume row-major ordering.
+                        uint get_strided_index(uint lin_idx) {
+                            uint remaining = lin_idx;
+                            uint phys_idx = 0;
+                            if (pc.rank > 0u) {
+                                uint prod = 1u;
+                                if (pc.rank > 1u) { prod = pc.shape.y * pc.shape.z * pc.shape.w; }
+                                uint i0 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i0 * pc.stride.x;
+                            }
+                            if (pc.rank > 1u) {
+                                uint prod = 1u;
+                                if (pc.rank > 2u) { prod = pc.shape.z * pc.shape.w; }
+                                uint i1 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i1 * pc.stride.y;
+                            }
+                            if (pc.rank > 2u) {
+                                uint prod = 1u;
+                                if (pc.rank > 3u) { prod = pc.shape.w; }
+                                uint i2 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i2 * pc.stride.z;
+                            }
+                            if (pc.rank > 3u) {
+                                uint i3 = remaining;
+                                phys_idx += i3 * pc.stride.w;
+                            }
+                            return pc.base + phys_idx;
+                        }
+
                         void neg_op() {
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             output_data[idx] = OUTER_TYPE(-INNER_TYPE(input_data[idx]));
                         }
 
@@ -96,6 +136,7 @@ macro_rules! unary_shaders {
                             const INNER_TYPE COEF_A = INNER_TYPE(0.79788456) + INNER_TYPE(0.000000000802865355);
                             const INNER_TYPE COEF_B = INNER_TYPE(0.04471509) + INNER_TYPE(-0.0000000026068047);
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             INNER_TYPE x = INNER_TYPE(input_data[idx]);
                             INNER_TYPE x_cubed = x * x * x;
                             INNER_TYPE inner = COEF_A * (x + COEF_B * x_cubed);
@@ -120,6 +161,7 @@ macro_rules! unary_shaders {
 
                         void gelu_erf_op() {
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             INNER_TYPE x = INNER_TYPE(input_data[idx]);
                             INNER_TYPE cdf = HALF * (ONE + erf_approx(x / sqrt(2.0)));
                             output_data[idx] = OUTER_TYPE(x * cdf);
@@ -127,34 +169,47 @@ macro_rules! unary_shaders {
 
                         void erf_op() {
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             INNER_TYPE x = INNER_TYPE(input_data[idx]);
                             output_data[idx] = OUTER_TYPE(erf_approx(x));
                         }
 
                         void silu_op() {
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             INNER_TYPE x = INNER_TYPE(input_data[idx]);
                             output_data[idx] = OUTER_TYPE(x / (ONE + exp(-x)));
                         }
 
                         void ceil_op() {
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             output_data[idx] = OUTER_TYPE(ceil(INNER_TYPE(input_data[idx])));
                         }
 
                         void floor_op() {
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             output_data[idx] = OUTER_TYPE(floor(INNER_TYPE(input_data[idx])));
                         }
 
                         void round_op() {
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             output_data[idx] = OUTER_TYPE(round(INNER_TYPE(input_data[idx])));
                         }
 
                         void sign_op() {
                             uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
                             output_data[idx] = OUTER_TYPE(sign(INNER_TYPE(input_data[idx])));
+                        }
+
+                        void sqr_op() {
+                            uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index(idx);
+                            INNER_TYPE data = INNER_TYPE(input_data[idx]);
+                            output_data[idx] = OUTER_TYPE(data * data);
                         }
 
                         // Conditional main() selection based on the define.
@@ -191,10 +246,107 @@ macro_rules! binary_shaders {
                         layout(set = 0, binding = 2) buffer OutputBuffer {
                             TYPE output_data[];
                         };
+                        layout(push_constant) uniform PushConstants {
+                            uint a_base;
+                            uint a_rank;         // number of dimensions
+                            uvec4 a_shape;       // padded shape (unused dimensions set to 1)
+                            uvec4 a_stride;      // padded stride (unused dimensions set to 1)
+                            uint b_base;
+                            uint b_rank;         // number of dimensions
+                            uvec4 b_shape;       // padded shape (unused dimensions set to 1)
+                            uvec4 b_stride;      // padded stride (unused dimensions set to 1)
+                        } pc;
+
+                        // This function converts a linear index to a physical index using the full
+                        // multi-dimensional layout. We assume row-major ordering.
+                        uint get_strided_index_a(uint lin_idx) {
+                            uint remaining = lin_idx;
+                            uint phys_idx = 0;
+                            if (pc.a_rank > 0u) {
+                                uint prod = 1u;
+                                if (pc.a_rank > 1u) { prod = pc.a_shape.y * pc.a_shape.z * pc.a_shape.w; }
+                                uint i0 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i0 * pc.a_stride.x;
+                            }
+                            if (pc.a_rank > 1u) {
+                                uint prod = 1u;
+                                if (pc.a_rank > 2u) { prod = pc.a_shape.z * pc.a_shape.w; }
+                                uint i1 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i1 * pc.a_stride.y;
+                            }
+                            if (pc.a_rank > 2u) {
+                                uint prod = 1u;
+                                if (pc.a_rank > 3u) { prod = pc.a_shape.w; }
+                                uint i2 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i2 * pc.a_stride.z;
+                            }
+                            if (pc.a_rank > 3u) {
+                                uint i3 = remaining;
+                                phys_idx += i3 * pc.a_stride.w;
+                            }
+                            return pc.a_base + phys_idx;
+                        }
+
+                        uint get_strided_index_b(uint lin_idx) {
+                            uint remaining = lin_idx;
+                            uint phys_idx = 0;
+                            if (pc.b_rank > 0u) {
+                                uint prod = 1u;
+                                if (pc.b_rank > 1u) { prod = pc.b_shape.y * pc.b_shape.z * pc.b_shape.w; }
+                                uint i0 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i0 * pc.b_stride.x;
+                            }
+                            if (pc.b_rank > 1u) {
+                                uint prod = 1u;
+                                if (pc.b_rank > 2u) { prod = pc.b_shape.z * pc.b_shape.w; }
+                                uint i1 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i1 * pc.b_stride.y;
+                            }
+                            if (pc.b_rank > 2u) {
+                                uint prod = 1u;
+                                if (pc.b_rank > 3u) { prod = pc.b_shape.w; }
+                                uint i2 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i2 * pc.b_stride.z;
+                            }
+                            if (pc.b_rank > 3u) {
+                                uint i3 = remaining;
+                                phys_idx += i3 * pc.b_stride.w;
+                            }
+                            return pc.b_base + phys_idx;
+                        }
+
+                        void add_op() {
+                            uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index_a(idx);
+                            uint b_idx = get_strided_index_b(idx);
+                            output_data[idx] = lhs_data[a_idx] + rhs_data[b_idx];
+                        }
 
                         void sub_op() {
                             uint idx = gl_GlobalInvocationID.x;
-                            output_data[idx] = lhs_data[idx] - rhs_data[idx];
+                            uint a_idx = get_strided_index_a(idx);
+                            uint b_idx = get_strided_index_b(idx);
+                            output_data[idx] = lhs_data[a_idx] - rhs_data[b_idx];
+                        }
+
+                        void div_op() {
+                            uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index_a(idx);
+                            uint b_idx = get_strided_index_b(idx);
+                            output_data[idx] = lhs_data[a_idx] / rhs_data[b_idx];
+                        }
+
+                        void mul_op() {
+                            uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index_a(idx);
+                            uint b_idx = get_strided_index_b(idx);
+                            output_data[idx] = lhs_data[a_idx] * rhs_data[b_idx];
                         }
 
                         // Conditional main() selection based on the define.
@@ -330,6 +482,7 @@ macro_rules! affine_elu_shaders {
                         // Push constants carrying full layout information (up to 4 dimensions)
                         // plus the affine parameters.
                         layout(push_constant) uniform PushConstants {
+                            uint base;
                             uint rank;         // number of dimensions
                             uvec4 shape;       // padded shape (unused dimensions set to 1)
                             uvec4 stride;      // padded stride (unused dimensions set to 1)
@@ -368,7 +521,7 @@ macro_rules! affine_elu_shaders {
                                 uint i3 = remaining;
                                 phys_idx += i3 * pc.stride.w;
                             }
-                            return phys_idx;
+                            return pc.base + phys_idx;
                         }
 
                         void affine_op() {
@@ -475,6 +628,7 @@ macro_rules! copy_strided_src_shaders {
                         // plus a destination offset.
                         // We assume a maximum rank of 4.
                         layout(push_constant) uniform PushConstants {
+                            uint base;
                             uint rank;
                             uvec4 shape;
                             uvec4 stride;
@@ -510,7 +664,7 @@ macro_rules! copy_strided_src_shaders {
                                 uint i3 = remaining;
                                 phys_idx += i3 * pc.stride.w;
                             }
-                            return phys_idx;
+                            return pc.base + phys_idx;
                         }
 
                         void main() {
@@ -778,9 +932,48 @@ macro_rules! cast_shaders {
                         layout(set = 0, binding = 1) buffer Output {
                             DST_TYPE output_data[];
                         };
+                        layout(push_constant) uniform PushConstants {
+                            uint base;
+                            uint rank;         // number of dimensions
+                            uvec4 shape;       // padded shape (unused dimensions set to 1)
+                            uvec4 stride;      // padded stride (unused dimensions set to 1)
+                        } pc;
+
+                        // This function converts a linear index to a physical index using the full
+                        // multi-dimensional layout. We assume row-major ordering.
+                        uint get_strided_index(uint lin_idx) {
+                            uint remaining = lin_idx;
+                            uint phys_idx = 0;
+                            if (pc.rank > 0u) {
+                                uint prod = 1u;
+                                if (pc.rank > 1u) { prod = pc.shape.y * pc.shape.z * pc.shape.w; }
+                                uint i0 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i0 * pc.stride.x;
+                            }
+                            if (pc.rank > 1u) {
+                                uint prod = 1u;
+                                if (pc.rank > 2u) { prod = pc.shape.z * pc.shape.w; }
+                                uint i1 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i1 * pc.stride.y;
+                            }
+                            if (pc.rank > 2u) {
+                                uint prod = 1u;
+                                if (pc.rank > 3u) { prod = pc.shape.w; }
+                                uint i2 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i2 * pc.stride.z;
+                            }
+                            if (pc.rank > 3u) {
+                                uint i3 = remaining;
+                                phys_idx += i3 * pc.stride.w;
+                            }
+                            return pc.base + phys_idx;
+                        }
 
                         void main() {
-                            uint idx = gl_GlobalInvocationID.x;
+                            uint idx = get_strided_index(gl_GlobalInvocationID.x);
                             output_data[idx] = DST_TYPE(input_data[idx]);
                         }",
                     define: [("SRC_TYPE", $src), ("DST_TYPE", $dst)]
@@ -943,6 +1136,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             (floor_shader, "floor_op", "float", "float"),
             (round_shader, "round_op", "float", "float"),
             (sign_shader, "sign_op", "float", "float"),
+            (sqr_shader, "sqr_op", "float", "float"),
             (neg_shader_f16, "neg_op", "float", "float16_t"),
             (gelu_shader_f16, "gelu_op", "float", "float16_t"),
             (gelu_erf_shader_f16, "gelu_erf_op", "float", "float16_t"),
@@ -952,6 +1146,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             (floor_shader_f16, "floor_op", "float", "float16_t"),
             (round_shader_f16, "round_op", "float", "float16_t"),
             (sign_shader_f16, "sign_op", "float", "float16_t"),
+            (sqr_shader_f16, "sqr_op", "float", "float16_t"),
         );
 
         // unary_shaders!(
@@ -1007,6 +1202,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "floor"        => floor_shader,
             "round"        => round_shader,
             "sign"         => sign_shader,
+            "sqr"          => sqr_shader,
             "neg_f16"      => neg_shader_f16,
             "gelu_f16"     => gelu_shader_f16,
             "gelu_erf_f16" => gelu_erf_shader_f16,
@@ -1016,6 +1212,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "floor_f16"    => floor_shader_f16,
             "round_fq6"    => round_shader_f16,
             "sign_f16"     => sign_shader_f16,
+            "sqr_f16"      => sqr_shader_f16,
             // "neg_f64"      => neg_shader_f64,
             // "gelu_f64"     => gelu_shader_f64,
             // "gelu_erf_f64" => gelu_erf_shader_f64,
@@ -1027,7 +1224,12 @@ impl crate::backend::BackendDevice for VulkanDevice {
             // "sign_f64"     => sign_shader_f64,
         );
 
-        binary_shaders!((sub_shader, "sub_op", "float"),);
+        binary_shaders!(
+            (add_shader, "add_op", "float"),
+            (sub_shader, "sub_op", "float"),
+            (div_shader, "div_op", "float"),
+            (mul_shader, "mul_op", "float"),
+        );
 
         macro_rules! load_binary_pipelines {
             ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
@@ -1061,7 +1263,10 @@ impl crate::backend::BackendDevice for VulkanDevice {
 
         let binary_pipelines = load_binary_pipelines!(
             device,
+            "add"          => add_shader,
             "sub"          => sub_shader,
+            "div"          => div_shader,
+            "mul"          => mul_shader,
         );
 
         reduce_shaders!(
