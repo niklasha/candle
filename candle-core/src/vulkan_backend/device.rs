@@ -47,6 +47,8 @@ pub struct VulkanDevice {
     pub(crate) binary_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) reduce_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) affine_elu_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
+    pub(crate) copy_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
+    pub(crate) cmp_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
 }
 
 enum DataSource<'a, T> {
@@ -68,7 +70,6 @@ macro_rules! unary_shaders {
                     ty: "compute",
                     src: "
                         #version 450
-                        #extension GL_ARB_gpu_shader_fp64 : enable
                         #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
                         #extension GL_EXT_shader_16bit_storage : require
                         #extension GL_AMD_gpu_shader_half_float: enable
@@ -177,7 +178,6 @@ macro_rules! binary_shaders {
                         #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
                         #extension GL_EXT_shader_16bit_storage : require
                         #extension GL_AMD_gpu_shader_half_float: enable
-                        #extension GL_ARB_gpu_shader_fp64 : enable
 
                         layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -221,21 +221,21 @@ macro_rules! reduce_shaders {
 
                         // Input tensor: a flat array of floats.
                         layout(std430, binding = 0) readonly buffer InputBuffer {
-                            float data[];
+                            TYPE data[];
                         };
 
                         // Output buffer for partial maximum values.
                         // Each workgroup writes one partial result.
                         layout(std430, binding = 1) writeonly buffer OutputBuffer {
-                            float partialMax[];
+                            TYPE partialResult[];
                         };
 
-                        // Total number of elements in the tensor.
-                        //uniform uint numElements;
-                        const uint numElements = 1; // XXX
+                        layout(push_constant) uniform ReductionConstants {
+                            uint numElements;
+                        } rc;
 
                         // Shared memory for intra-group reduction.
-                        shared float sdata[256];
+                        shared TYPE sdata[256];
 
                         void max_op() {
                             // Compute global and local indices.
@@ -245,8 +245,8 @@ macro_rules! reduce_shaders {
 
                             // Each thread loads several elements (striding by total number of threads)
                             // and computes a local maximum.
-                            float maxVal = -3.402823466e+38; // Use the smallest possible float (approx. -FLT_MAX)
-                            for (uint i = globalId; i < numElements; i += totalThreads) {
+                            TYPE maxVal = -3.402823466e+38; // Use the smallest possible float (approx. -FLT_MAX)
+                            for (uint i = globalId; i < rc.numElements; i += totalThreads) {
                                 maxVal = max(maxVal, data[i]);
                             }
 
@@ -265,9 +265,40 @@ macro_rules! reduce_shaders {
 
                             // The first thread in each workgroup writes the partial result.
                             if (localId == 0) {
-                                partialMax[gl_WorkGroupID.x] = sdata[0];
+                                partialResult[gl_WorkGroupID.x] = sdata[0];
                             }
                         }
+
+                        void sum_op() {
+                            // Compute global and local indices.
+                            uint globalId = gl_GlobalInvocationID.x;
+                            uint localId  = gl_LocalInvocationID.x;
+                            uint totalThreads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+                            // Each thread loads several elements and accumulates their sum.
+                            TYPE sumVal = 0.0;
+                            for (uint i = globalId; i < rc.numElements; i += totalThreads) {
+                                sumVal += data[i];
+                            }
+
+                            // Store the per-thread sum in shared memory.
+                            sdata[localId] = sumVal;
+                            barrier();
+
+                            // Perform parallel reduction (sum) within the workgroup.
+                            for (uint offset = gl_WorkGroupSize.x / 2; offset > 0; offset >>= 1) {
+                                if (localId < offset) {
+                                    sdata[localId] += sdata[localId + offset];
+                                }
+                                barrier();
+                            }
+
+                            // The first thread writes the partial sum.
+                            if (localId == 0) {
+                                partialResult[gl_WorkGroupID.x] = sdata[0];
+                            }
+                        }
+
                         // Conditional main() selection based on the define.
                         void main() { OP(); }
                     ",
@@ -364,6 +395,175 @@ macro_rules! affine_elu_shaders {
             }
         )*
     }
+}
+macro_rules! copy2d_shaders {
+    ($( ($mod:ident, $ty:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    src: "
+                        #version 450
+                        #extension GL_ARB_gpu_shader_int64 : require
+
+                        // Use a 16x16 workgroup.
+                        layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+                        // Source buffer (read-only).
+                        layout(set = 0, binding = 0) readonly buffer SrcBuffer {
+                            TYPE src_data[];
+                        };
+                        // Destination buffer (write-only).
+                        layout(set = 0, binding = 1) writeonly buffer DstBuffer {
+                            TYPE dst_data[];
+                        };
+
+                        // Push constants for region parameters.
+                        // Order:
+                        //  src_offset, dst_offset,
+                        //  rows, cols,
+                        //  src_stride, dst_stride.
+                        layout(push_constant) uniform Copy2DPushConstants {
+                            uint src_offset;
+                            uint dst_offset;
+                            uint rows;        // d1: number of rows to copy
+                            uint cols;        // d2: number of columns to copy
+                            uint src_stride;  // source row stride
+                            uint dst_stride;  // destination row stride
+                        } pc;
+
+                        void main() {
+                            uint x = gl_GlobalInvocationID.x; // column index within the region
+                            uint y = gl_GlobalInvocationID.y; // row index within the region
+                            if (x < pc.cols && y < pc.rows) {
+                                uint src_index = pc.src_offset + y * pc.src_stride + x;
+                                uint dst_index = pc.dst_offset + y * pc.dst_stride + x;
+                                dst_data[dst_index] = src_data[src_index];
+                            }
+                        }
+                    ",
+                    define: [("TYPE", $ty)]
+                }
+            }
+        )*
+    }
+}
+
+macro_rules! copy_strided_src_shaders {
+    ($( ($mod:ident, $ty:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    src: "
+                        #version 450
+                        #extension GL_ARB_gpu_shader_int64 : require
+
+                        // Use a 256-thread 1D workgroup.
+                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+                        // Source buffer (read-only).
+                        layout(set = 0, binding = 0) readonly buffer SrcBuffer {
+                            TYPE src_data[];
+                        };
+                        // Destination buffer (write-only).
+                        layout(set = 0, binding = 1) writeonly buffer DstBuffer {
+                            TYPE dst_data[];
+                        };
+
+                        // Push constants carrying full layout information for the source tensor
+                        // plus a destination offset.
+                        // We assume a maximum rank of 4.
+                        layout(push_constant) uniform PushConstants {
+                            uint rank;
+                            uvec4 shape;
+                            uvec4 stride;
+                            uint dst_offset;
+                        } pc;
+
+                        // Compute the physical index in the source from a linear index using full layout.
+                        uint get_strided_index(uint lin_idx) {
+                            uint remaining = lin_idx;
+                            uint phys_idx = 0;
+                            if (pc.rank > 0u) {
+                                uint prod = 1u;
+                                if (pc.rank > 1u) { prod = pc.shape.y * pc.shape.z * pc.shape.w; }
+                                uint i0 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i0 * pc.stride.x;
+                            }
+                            if (pc.rank > 1u) {
+                                uint prod = 1u;
+                                if (pc.rank > 2u) { prod = pc.shape.z * pc.shape.w; }
+                                uint i1 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i1 * pc.stride.y;
+                            }
+                            if (pc.rank > 2u) {
+                                uint prod = 1u;
+                                if (pc.rank > 3u) { prod = pc.shape.w; }
+                                uint i2 = remaining / prod;
+                                remaining = remaining % prod;
+                                phys_idx += i2 * pc.stride.z;
+                            }
+                            if (pc.rank > 3u) {
+                                uint i3 = remaining;
+                                phys_idx += i3 * pc.stride.w;
+                            }
+                            return phys_idx;
+                        }
+
+                        void main() {
+                            uint lin_idx = gl_GlobalInvocationID.x;
+                            // Compute total number of elements.
+                            uint total_elements = pc.shape.x * pc.shape.y * pc.shape.z * pc.shape.w;
+                            if (lin_idx < total_elements) {
+                                uint src_index = get_strided_index(lin_idx);
+                                // Write contiguously starting at dst_offset.
+                                dst_data[pc.dst_offset + lin_idx] = src_data[src_index];
+                            }
+                        }
+                    ",
+                    define: [("TYPE", $ty)]
+                }
+            }
+        )*
+    }
+}
+
+macro_rules! cmp_shaders {
+    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    src: "
+                        #version 450
+                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+                        // Input buffers containing values of type TYPE.
+                        layout(set = 0, binding = 0) buffer LhsBuffer {
+                            TYPE lhs_data[];
+                        };
+                        layout(set = 0, binding = 1) buffer RhsBuffer {
+                            TYPE rhs_data[];
+                        };
+                        // Output buffer contains unsigned integers: 1 means true, 0 means false.
+                        layout(set = 0, binding = 2) buffer OutBuffer {
+                            uint out_data[];
+                        };
+
+                        // The comparison operation is chosen by the preprocessor define OP.
+                        void main() {
+                            uint idx = gl_GlobalInvocationID.x;
+                            out_data[idx] = (lhs_data[idx] OP rhs_data[idx]) ? 1u : 0u;
+                        }
+                    ",
+                    define: [("OP", $op), ("TYPE", $ty)]
+                }
+            }
+        )*
+    };
 }
 
 impl VulkanDevice {
@@ -614,6 +814,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
         };
         let required_features = DeviceFeatures {
             storage_buffer16_bit_access: true,
+            shader_int64: true,
             ..DeviceFeatures::empty()
         };
 
@@ -863,7 +1064,10 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "sub"          => sub_shader,
         );
 
-        reduce_shaders!((max_shader, "max_op", "float"),);
+        reduce_shaders!(
+            (max_shader, "max_op", "float"),
+            (sum_shader, "sum_op", "float"),
+        );
 
         macro_rules! load_reduce_pipelines {
             ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
@@ -898,6 +1102,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
         let reduce_pipelines = load_reduce_pipelines!(
             device,
             "max"          => max_shader,
+            "sum"          => sum_shader,
         );
 
         affine_elu_shaders!((affine_shader, "affine_op"), (elu_shader, "elu_op"),);
@@ -918,12 +1123,12 @@ impl crate::backend::BackendDevice for VulkanDevice {
                      let stage = PipelineShaderStageCreateInfo::new(entry_point);
                      let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
                         .into_pipeline_layout_create_info($device.clone())
-                        .map_err(|e| VulkanError::Message(e.to_string()))?;
+                        .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
                      let layout = PipelineLayout::new($device.clone(), layout_info)
-                        .map_err(|e| VulkanError::Message(e.to_string()))?;
+                        .map_err(VulkanError::ValidatedVulkanError)?;
                      let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
                      let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
-                        .map_err(|e| VulkanError::Message(e.to_string()))?;
+                        .map_err(VulkanError::ValidatedVulkanError)?;
                      map.insert($name, pipeline);
                  )*
                  map
@@ -934,6 +1139,89 @@ impl crate::backend::BackendDevice for VulkanDevice {
             device,
             "affine" => affine_shader,
             "elu" => elu_shader,
+        );
+
+        copy2d_shaders!((copy2d_shader, "float"), (copy2d_shader_64, "int64_t"),);
+
+        copy_strided_src_shaders!(
+            (copy_strided_src_shader, "float"),
+            (copy_strided_src_shader_64, "int64_t"),
+        );
+
+        macro_rules! load_copy_shaders {
+            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
+                 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
+                 use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
+                 use vulkano::pipeline::PipelineShaderStageCreateInfo;
+                 use std::collections::HashMap;
+                 use std::sync::Arc;
+                 let mut map = HashMap::new();
+                 $(
+                     let shader = $mod::load($device.clone())
+                         .map_err(VulkanError::ValidatedVulkanError)?;
+                     let entry_point = shader.entry_point("main")
+                         .ok_or_else(|| VulkanError::Message(format!("Missing entry point for {}", $name)))?;
+                     let stage = PipelineShaderStageCreateInfo::new(entry_point);
+                     let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+                        .into_pipeline_layout_create_info($device.clone())
+                        .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
+                     let layout = PipelineLayout::new($device.clone(), layout_info)
+                        .map_err(VulkanError::ValidatedVulkanError)?;
+                     let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
+                     let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
+                        .map_err(VulkanError::ValidatedVulkanError)?;
+                     map.insert($name, pipeline);
+                 )*
+                 map
+            }};
+        }
+
+        let copy_pipelines = load_copy_shaders!(
+            device,
+            "copy2d" => copy2d_shader,
+            "copy2d_64" => copy2d_shader_64,
+            "copy_strided_src" => copy_strided_src_shader,
+            "copy_strided_src_64" => copy_strided_src_shader_64,
+        );
+
+        cmp_shaders!((cmp_eq_shader, "==", "float"));
+
+        macro_rules! load_cmp_pipelines {
+            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {
+                {
+                    use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
+                    use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
+                    use vulkano::pipeline::PipelineShaderStageCreateInfo;
+                    use std::collections::HashMap;
+                    use std::sync::Arc;
+                    let mut map = HashMap::new();
+                    $(
+                        let shader = $mod::load($device.clone())
+                            .map_err(VulkanError::ValidatedVulkanError)?;
+                        let entry_point = shader.entry_point("main")
+                            .ok_or_else(|| VulkanError::Message(format!("Missing cmp entry point for {}", $name)))?;
+                        let stage = PipelineShaderStageCreateInfo::new(entry_point);
+                        let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+                            .into_pipeline_layout_create_info($device.clone())
+                            .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
+                        let layout = PipelineLayout::new($device.clone(), layout_info)
+                            .map_err(VulkanError::ValidatedVulkanError)?;
+                        let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
+                        let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
+                            .map_err(VulkanError::ValidatedVulkanError)?;
+                        map.insert($name, pipeline);
+                    )*
+                    map
+                }
+            };
+        }
+
+        let cmp_pipelines = load_cmp_pipelines!(
+            device,
+            "Eq" => cmp_eq_shader,
+            // Add more if you want, e.g.:
+            // "Lt" => cmp_lt_shader,
+            // "Gt" => cmp_gt_shader,
         );
 
         Ok(Self {
@@ -951,6 +1239,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
             binary_pipelines,
             reduce_pipelines,
             affine_elu_pipelines,
+            copy_pipelines,
+            cmp_pipelines,
         })
     }
 
