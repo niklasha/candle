@@ -308,17 +308,23 @@ impl VulkanStorage {
         }
     }
 
-    fn reduce_op_impl(&self, layout: &Layout, pipeline: &Arc<ComputePipeline>) -> Result<Self> {
+    fn reduce_op_impl(&self, layout: &Layout,  reduce_axes: &[usize], pipeline: &Arc<ComputePipeline>) -> Result<Self> {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct ReductionConstants {
-            num_elements: u32,
+        #[derive(Debug)]
+struct PushConstants {
+            base: u32,
+            rank: u32,
+            _pad0: [u32; 2],
+            shape: [u32; 4],
+            stride: [u32; 4],
+            reduce_axes: [u32; 4],
         }
 
         let dtype = self.dtype();
 
         // Only handle F32 for now
-        if dtype != DType::F32 {
+        if dtype != DType::F32 && dtype != DType::U32 {
             return Err(VulkanError::Message(format!(
                 "Unsupported dtype: {:?}",
                 dtype
@@ -329,16 +335,45 @@ impl VulkanStorage {
             let elem_count = layout.shape().elem_count();
             let device = self.device();
             let new_storage = unsafe { device.alloc_uninit(layout.shape(), dtype)? };
-            let reduction_constants = ReductionConstants {
-                num_elements: elem_count as u32,
+
+            let shape_slice = layout.shape();
+            let stride_slice = layout.stride();
+            let mut shape_arr = [1u32; 4];
+            let mut stride_arr = [1u32; 4];
+            for i in 0..shape_slice.rank().min(4) {
+                shape_arr[i] = (shape_slice.dim(i).unwrap())
+                    .try_into()
+                    .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
+            }
+            for i in 0..stride_slice.len().min(4) {
+                stride_arr[i] = (*stride_slice.get(i).unwrap()) as u32;
+            }
+            let rank = shape_slice.rank() as u32;
+            let base = layout.start_offset() as u32;
+            let reduce_axes: [u32; 4] = reduce_axes.iter()
+                .map(|&dim| dim as u32)
+                .chain(std::iter::repeat(u32::MAX)) // fill extras
+                .take(4)                            // up to 4
+                .collect::<Vec<_>>()                // produce a Vec<u32>
+                .try_into()                         // convert Vec<u32> into [u32; 4]
+                .unwrap();
+
+            let push_constants = PushConstants {
+                base,
+                rank,
+                _pad0: [0; 2],
+                shape: shape_arr,
+                stride: stride_arr,
+                reduce_axes,
             };
+            println!("{:?}", push_constants);
 
             self.execute_compute_kernel(
                 pipeline,
                 vec![buffer],
                 vec![(*new_storage.buffer).clone().unwrap()],
                 elem_count,
-                reduction_constants,
+                push_constants,
             )?;
 
             Ok(new_storage)
@@ -680,15 +715,20 @@ impl crate::backend::BackendStorage for VulkanStorage {
     }
 
     fn reduce_op(&self, op: ReduceOp, layout: &Layout, s: &[usize]) -> Result<Self> {
-        match (op, self.dtype) {
-            (ReduceOp::Max, DType::F32) | (ReduceOp::Sum, DType::F32) => {
-                if let Some(pipeline) = self.device.reduce_pipelines.get(op.name()) {
-                    self.reduce_op_impl(layout, pipeline)
+        let suffix = match self.dtype {
+            DType::F32 => "",
+            DType::U32 => "_u32",
+            _ => todo!("Unsupported dtype {:?}", self.dtype),
+        };
+        match op {
+            ReduceOp::Max | ReduceOp::Sum => {
+                if let Some(pipeline) = self.device.reduce_pipelines.get(format!("{}{}", op.name(), suffix).as_str()) {
+                    self.reduce_op_impl(layout, s, pipeline)
                 } else {
                     fail!()
                 }
             }
-            _ => todo!("Unsupported op/dtype combo {:?} {:?}", op, self.dtype),
+            _ => todo!("Unsupported op {:?}", op),
         }
     }
 

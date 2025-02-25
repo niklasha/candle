@@ -360,7 +360,7 @@ macro_rules! binary_shaders {
 }
 
 macro_rules! reduce_shaders {
-    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
+    ($( ($mod:ident, $op:literal, $ty:literal, $min:literal) ),* $(,)?) => {
         $(
             mod $mod {
                 vulkano_shaders::shader! {
@@ -369,7 +369,7 @@ macro_rules! reduce_shaders {
                         #version 450
 
                         // Workgroup size; adjust as needed.
-                        layout (local_size_x = 256) in;
+                        layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
                         // Input tensor: a flat array of floats.
                         layout(std430, binding = 0) readonly buffer InputBuffer {
@@ -382,79 +382,163 @@ macro_rules! reduce_shaders {
                             TYPE partialResult[];
                         };
 
-                        layout(push_constant) uniform ReductionConstants {
-                            uint numElements;
-                        } rc;
+                        layout(push_constant) uniform ReducePushConstants {
+                            uint base;                      // start offset in the src_data buffer
+                            uint rank;                      // number of dimensions
+                            uvec4 shape;                    // up to 4 dims of shape (unused set to 1)
+                            uvec4 stride;                   // up to 4 dims of stride (unused set to 1)
+                            uvec4 reduce_axes;              // bit flags or dimension indices (explained below)
+                        } pc;
 
                         // Shared memory for intra-group reduction.
                         shared TYPE sdata[256];
 
-                        void max_op() {
-                            // Compute global and local indices.
-                            uint globalId = gl_GlobalInvocationID.x;
-                            uint localId  = gl_LocalInvocationID.x;
-                            uint totalThreads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+                        // A helper function for computing the physical index in src_data
+                        // from a logical index over the *non‐reduced* dims. For example, if we are
+                        // reducing over dims [1,3], we only iterate the logical space of dims [0,2,...].
+                        uint get_strided_index(uint logical_idx) {
+                            // We'll parse pc.shape & pc.stride to figure out how to unflatten
+                            // the index among only the *non-reduced* axes, then map to physical index.
+                            // This can be done in many ways, here’s one approach:
 
-                            // Each thread loads several elements (striding by total number of threads)
-                            // and computes a local maximum.
-                            TYPE maxVal = -3.402823466e+38; // Use the smallest possible float (approx. -FLT_MAX)
-                            for (uint i = globalId; i < rc.numElements; i += totalThreads) {
-                                maxVal = max(maxVal, data[i]);
-                            }
+                            // Step 1: figure out the product of all non‐reduced dims to decode the index dimension by dimension.
+                            // For instance, if rank=4, shape=[D0, D1, D2, D3],
+                            // and we are reducing over dims 1 & 3, then the logical shape is effectively [D0, D2].
+                            // We'll parse that from reduce_axes.
 
-                            // Store the per-thread maximum in shared memory.
-                            sdata[localId] = maxVal;
-                            barrier();  // Ensure all threads have written their value.
+                            // We'll store the dimension sizes of the non‐reduced axes in a small local array:
+                            uint red_shape[4];
+                            uint red_stride[4];
+                            uint red_rank = 0;
+                            // We'll fill red_shape[] with the dims that are not in reduce_axes
+                            // likewise for red_stride[]
 
-                            // Perform parallel reduction within the workgroup.
-                            // The stride halves at each iteration.
-                            for (uint offset = gl_WorkGroupSize.x / 2; offset > 0; offset >>= 1) {
-                                if (localId < offset) {
-                                    sdata[localId] = max(sdata[localId], sdata[localId + offset]);
+                            for (uint d = 0; d < pc.rank; d++) {
+                                // Suppose if reduce_axes.x..y..z..w are dimension indices that are reduced,
+                                // or if they are 0xFFFFFFFF if unused. We'll do a quick check:
+                                bool is_reduced = false;
+                                if (pc.reduce_axes.x == d || pc.reduce_axes.y == d ||
+                                    pc.reduce_axes.z == d || pc.reduce_axes.w == d) {
+                                    is_reduced = true;
                                 }
-                                barrier();  // Wait for all threads to update shared memory.
+                                if (is_reduced) {
+                                    // This dimension is not reduced, so we store it in red_shape[] and red_stride[]
+                                    red_shape[red_rank]  = pc.shape[d];
+                                    red_stride[red_rank] = pc.stride[d];
+                                    red_rank++;
+                                }
                             }
 
-                            // The first thread in each workgroup writes the partial result.
-                            if (localId == 0) {
+                            // Now logical_idx ranges from [0 .. product(all non-reduced dims) ).
+                            // We'll decode dimension by dimension in the non-reduced rank.
+
+                            uint remaining = logical_idx;
+                            uint phys_idx = 0;
+                            for (uint i = 0; i < red_rank; i++) {
+                                // product of subsequent dims
+                                uint prod = 1u;
+                                for (uint j = i + 1; j < red_rank; j++) {
+                                    prod *= red_shape[j];
+                                }
+                                uint coordinate = remaining / prod;     // index along dimension i
+                                remaining = remaining % prod;
+                                phys_idx += coordinate * red_stride[i];
+                            }
+
+                            // Finally, add the base offset:
+                            return pc.base + phys_idx;
+                        }
+
+                        void max_op() {
+                            uint global_id   = gl_GlobalInvocationID.x;
+                            uint local_id    = gl_LocalInvocationID.x;
+
+                            // Calculate the product of the non-reduced dimensions
+                            uint total_size  = 1;
+                            for (uint d = 0; d < pc.rank; d++) {
+                                bool is_reduced = false;
+                                if (pc.reduce_axes.x == d || pc.reduce_axes.y == d ||
+                                    pc.reduce_axes.z == d || pc.reduce_axes.w == d) {
+                                    is_reduced = true;
+                                }
+                                if (is_reduced) {
+                                    total_size *= pc.shape[d];
+                                }
+                            }
+
+                            // Each thread processes multiple elements
+                            uint total_threads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+                            TYPE maxVal = MIN;
+
+                            // Loop over all relevant indices in the non-reduced space
+                            for (uint i = global_id; i < total_size; i += total_threads) {
+                                uint src_index = get_strided_index(i);
+                                maxVal = max(maxVal, data[src_index]);
+                            }
+
+                            // Store the per-thread maximum in shared memory
+                            sdata[local_id] = maxVal;
+                            barrier();
+
+                            // Perform a parallel reduction within the workgroup
+                            for (uint offset = gl_WorkGroupSize.x / 2; offset > 0; offset >>= 1) {
+                                if (local_id < offset) {
+                                    sdata[local_id] = max(sdata[local_id], sdata[local_id + offset]);
+                                }
+                                barrier();
+                            }
+
+                            // The first thread in each workgroup writes out the partial result
+                            if (local_id == 0) {
                                 partialResult[gl_WorkGroupID.x] = sdata[0];
                             }
                         }
 
                         void sum_op() {
-                            // Compute global and local indices.
-                            uint globalId = gl_GlobalInvocationID.x;
-                            uint localId  = gl_LocalInvocationID.x;
-                            uint totalThreads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+                            uint global_id     = gl_GlobalInvocationID.x;
+                            uint local_id      = gl_LocalInvocationID.x;
+                            uint total_threads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
 
-                            // Each thread loads several elements and accumulates their sum.
-                            TYPE sumVal = 0.0;
-                            for (uint i = globalId; i < rc.numElements; i += totalThreads) {
-                                sumVal += data[i];
+                            // (1) Product of non-reduced dims
+                            uint total_size = 1;
+                            for (uint d = 0; d < pc.rank; d++) {
+                                bool is_reduced = false;
+                                if (pc.reduce_axes.x == d || pc.reduce_axes.y == d ||
+                                    pc.reduce_axes.z == d || pc.reduce_axes.w == d) {
+                                    is_reduced = true;
+                                }
+                                if (is_reduced) {
+                                    total_size *= pc.shape[d];
+                                }
                             }
 
-                            // Store the per-thread sum in shared memory.
-                            sdata[localId] = sumVal;
+                            TYPE sumVal = 0;
+                            for (uint i = global_id; i < total_size; i += total_threads) {
+                                uint src_index = get_strided_index(i);
+                                sumVal += data[src_index];
+                            }
+
+                            sdata[local_id] = sumVal;
                             barrier();
 
-                            // Perform parallel reduction (sum) within the workgroup.
                             for (uint offset = gl_WorkGroupSize.x / 2; offset > 0; offset >>= 1) {
-                                if (localId < offset) {
-                                    sdata[localId] += sdata[localId + offset];
+                                if (local_id < offset) {
+                                    sdata[local_id] += sdata[local_id + offset];
                                 }
                                 barrier();
                             }
 
-                            // The first thread writes the partial sum.
-                            if (localId == 0) {
+                            if (local_id == 0) {
                                 partialResult[gl_WorkGroupID.x] = sdata[0];
                             }
                         }
 
-                        // Conditional main() selection based on the define.
-                        void main() { OP(); }
+                        void main() {
+                            OP();
+                        }
                     ",
-                    define: [("OP", $op), ("TYPE", $ty)]
+                    define: [("OP", $op), ("TYPE", $ty), ("MIN", $min)]
                 }
             }
         )*
@@ -1270,8 +1354,10 @@ impl crate::backend::BackendDevice for VulkanDevice {
         );
 
         reduce_shaders!(
-            (max_shader, "max_op", "float"),
-            (sum_shader, "sum_op", "float"),
+            (max_shader, "max_op", "float", "-3.402823466e+38"),
+            (sum_shader, "sum_op", "float", "-3.402823466e+38"),
+            (max_shader_u32, "max_op", "uint", "0"),
+            (sum_shader_u32, "sum_op", "uint", "0"),
         );
 
         macro_rules! load_reduce_pipelines {
@@ -1308,6 +1394,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
             device,
             "max"          => max_shader,
             "sum"          => sum_shader,
+            "max_u32"      => max_shader_u32,
+            "sum_u32"      => sum_shader_u32,
         );
 
         affine_elu_shaders!((affine_shader, "affine_op"), (elu_shader, "elu_op"),);
