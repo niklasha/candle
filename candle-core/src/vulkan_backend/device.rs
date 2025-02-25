@@ -234,7 +234,7 @@ macro_rules! binary_shaders {
                         #extension GL_EXT_shader_16bit_storage : require
                         #extension GL_AMD_gpu_shader_half_float: enable
 
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+                        layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 
                         // Buffer bindings
                         layout(set = 0, binding = 0) buffer LhsBuffer {
@@ -369,7 +369,7 @@ macro_rules! reduce_shaders {
                         #version 450
 
                         // Workgroup size; adjust as needed.
-                        layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+                        layout (local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 
                         // Input tensor: a flat array of floats.
                         layout(std430, binding = 0) readonly buffer InputBuffer {
@@ -391,7 +391,7 @@ macro_rules! reduce_shaders {
                         } pc;
 
                         // Shared memory for intra-group reduction.
-                        shared TYPE sdata[256];
+                        shared TYPE sdata[512];
 
                         // A helper function for computing the physical index in src_data
                         // from a logical index over the *non‐reduced* dims. For example, if we are
@@ -553,7 +553,7 @@ macro_rules! affine_elu_shaders {
                     ty: "compute",
                     src: "
                         #version 450
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+                        layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 
                         // Buffer bindings.
                         layout(set = 0, binding = 0) buffer InputBuffer {
@@ -696,8 +696,8 @@ macro_rules! copy_strided_src_shaders {
                         #version 450
                         #extension GL_ARB_gpu_shader_int64 : require
 
-                        // Use a 256-thread 1D workgroup.
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+                        // Use a 512-thread 1D workgroup.
+                        layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 
                         // Source buffer (read-only).
                         layout(set = 0, binding = 0) readonly buffer SrcBuffer {
@@ -777,7 +777,7 @@ macro_rules! cmp_shaders {
                     ty: "compute",
                     src: "
                         #version 450
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+                        layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 
                         // Input buffers containing values of type TYPE.
                         layout(set = 0, binding = 0) buffer LhsBuffer {
