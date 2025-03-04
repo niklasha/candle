@@ -14,7 +14,7 @@ pub enum VulkanError {
     Message(String),
     #[error(transparent)]
     LoadingError(#[from] vulkano::LoadingError),
-    #[error(transparent)]
+    #[error("{0:?}")]
     ValidatedVulkanError(#[from] vulkano::Validated<vulkano::VulkanError>),
     #[error(transparent)]
     VulkanError(#[from] vulkano::VulkanError),
