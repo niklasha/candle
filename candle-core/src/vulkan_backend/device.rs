@@ -912,6 +912,9 @@ macro_rules! cmp_shaders {
                     ty: "compute",
                     src: "
                         #version 450
+
+                        #extension GL_EXT_shader_8bit_storage : require
+
                         layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
                         // Input buffers containing values of type TYPE.
@@ -923,13 +926,13 @@ macro_rules! cmp_shaders {
                         };
                         // Output buffer contains unsigned integers: 1 means true, 0 means false.
                         layout(set = 0, binding = 2) buffer OutBuffer {
-                            uint out_data[];
+                            uint8_t out_data[];
                         };
 
                         // The comparison operation is chosen by the preprocessor define OP.
                         void main() {
                             uint idx = gl_GlobalInvocationID.x;
-                            out_data[idx] = (lhs_data[idx] OP rhs_data[idx]) ? 1u : 0u;
+                            out_data[idx] = uint8_t((lhs_data[idx] OP rhs_data[idx]) ? 1u : 0u);
                         }
                     ",
                     define: [("OP", $op), ("TYPE", $ty)]
@@ -1662,6 +1665,11 @@ impl crate::backend::BackendDevice for VulkanDevice {
         );
 
         cmp_shaders!((cmp_eq_shader, "==", "float"));
+        cmp_shaders!((cmp_ne_shader, "!=", "float"));
+        cmp_shaders!((cmp_lt_shader, "<", "float"));
+        cmp_shaders!((cmp_gt_shader, ">", "float"));
+        cmp_shaders!((cmp_le_shader, "<=", "float"));
+        cmp_shaders!((cmp_ge_shader, ">=", "float"));
 
         macro_rules! load_cmp_pipelines {
             ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {
@@ -1696,9 +1704,11 @@ impl crate::backend::BackendDevice for VulkanDevice {
         let cmp_pipelines = load_cmp_pipelines!(
             device,
             "Eq" => cmp_eq_shader,
-            // Add more if you want, e.g.:
-            // "Lt" => cmp_lt_shader,
-            // "Gt" => cmp_gt_shader,
+            "Ne" => cmp_ne_shader,
+            "Lt" => cmp_lt_shader,
+            "Gt" => cmp_gt_shader,
+            "Le" => cmp_le_shader,
+            "Ge" => cmp_ge_shader,
         );
 
         Ok(Self {

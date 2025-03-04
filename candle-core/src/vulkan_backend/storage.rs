@@ -882,7 +882,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
         // We choose U32 to store 1 for true and 0 for false.
         let elem_count = layout.shape().elem_count();
         let device = self.device();
-        let new_storage = unsafe { device.alloc_uninit(layout.shape(), DType::U32)? };
+        let new_storage = unsafe { device.alloc_uninit(layout.shape(), DType::U8)? };
 
         // Look up the appropriate comparison pipeline using cmp_op.name().
         let pipeline = device
