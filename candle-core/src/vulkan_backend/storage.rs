@@ -3,7 +3,7 @@
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::cpu_backend::{binary_map, binary_map_vec};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{CpuStorage, DType, Layout, Result, VulkanDevice, VulkanError};
+use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
 use candle_vulkan_kernels::Source;
 use std::fmt;
 use std::sync::Arc;
@@ -71,6 +71,7 @@ impl VulkanStorage {
         output_buffers: Vec<Subbuffer<[u8]>>,
         elem_count: usize,
         push_constants: PC,
+        direct_dispatch: bool,
     ) -> Result<()> {
         let device = self.device();
 
@@ -114,7 +115,15 @@ impl VulkanStorage {
                 .map_err(VulkanError::ValidationError)?
                 .push_constants(pipeline.layout().clone(), 0, push_constants)
                 .map_err(VulkanError::ValidationError)?
-                .dispatch([(elem_count as u32 + 255) / 256, 1, 1])
+                .dispatch([
+                    if direct_dispatch {
+                        elem_count as u32
+                    } else {
+                        (elem_count as u32 + 255) / 256
+                    },
+                    1,
+                    1,
+                ])
                 .map_err(|e| VulkanError::ValidationError(e.into()))?;
         }
 
@@ -150,7 +159,7 @@ impl VulkanStorage {
     //             .map_err(VulkanError::ValidatedVulkanError)?,
     //     )
     //     .map_err(VulkanError::ValidationError)?
-    //     .dispatch([(elem_count as u32 + 255) / 256, 1, 1])
+    //     .dispatch([(elem_count as u32 + 255) / 512, 1, 1])
     //     .map_err(|e| VulkanError::Message(format!("Dispatch failed: {e}")))?;
 
     fn unary_op_impl(
@@ -203,6 +212,7 @@ impl VulkanStorage {
                 vec![(*new_storage.buffer).clone().unwrap()],
                 elem_count,
                 push_constants,
+                false,
             )?;
 
             Ok(new_storage)
@@ -299,6 +309,7 @@ impl VulkanStorage {
                 vec![(*new_storage.buffer).clone().unwrap()],
                 elem_count,
                 push_constants,
+                false,
             )?;
 
             Ok(new_storage)
@@ -308,11 +319,19 @@ impl VulkanStorage {
         }
     }
 
-    fn reduce_op_impl(&self, layout: &Layout,  reduce_axes: &[usize], pipeline: &Arc<ComputePipeline>) -> Result<Self> {
+    fn reduce_op_impl(
+        &self,
+        layout: &Layout,
+        reduce_axes: &[usize],
+        partial_pipeline: &Arc<ComputePipeline>, // partial reduction shader
+        combine_pipeline: &Arc<ComputePipeline>, // combining shader
+        to_index: bool,                          // false for sum, true for argmax/argmin
+    ) -> Result<Self> {
+        use std::convert::TryInto;
+
         #[repr(C)]
-        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        #[derive(Debug)]
-struct PushConstants {
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+        struct ReducePushConstants {
             base: u32,
             rank: u32,
             _pad0: [u32; 2],
@@ -321,64 +340,153 @@ struct PushConstants {
             reduce_axes: [u32; 4],
         }
 
-        let dtype = self.dtype();
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+        struct CombinePushConstants {
+            num_partials: u32,
+        }
 
-        // Only handle F32 for now
+        // Only support F32/U32 for now.
+        let dtype = self.dtype();
         if dtype != DType::F32 && dtype != DType::U32 {
             return Err(VulkanError::Message(format!(
                 "Unsupported dtype: {:?}",
                 dtype
             )))?;
         }
+        let result_dtype = if to_index { DType::U32 } else { dtype };
 
         if let Some(buffer) = (*self.buffer).clone() {
-            let elem_count = layout.shape().elem_count();
             let device = self.device();
-            let new_storage = unsafe { device.alloc_uninit(layout.shape(), dtype)? };
 
+            // Build tensor metadata.
             let shape_slice = layout.shape();
             let stride_slice = layout.stride();
+            let rank = shape_slice.rank() as u32;
             let mut shape_arr = [1u32; 4];
             let mut stride_arr = [1u32; 4];
-            for i in 0..shape_slice.rank().min(4) {
-                shape_arr[i] = (shape_slice.dim(i).unwrap())
+            for i in 0..(rank as usize).min(4) {
+                shape_arr[i] = shape_slice
+                    .dim(i)
+                    .unwrap()
                     .try_into()
                     .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
             }
             for i in 0..stride_slice.len().min(4) {
                 stride_arr[i] = (*stride_slice.get(i).unwrap()) as u32;
             }
-            let rank = shape_slice.rank() as u32;
             let base = layout.start_offset() as u32;
-            let reduce_axes: [u32; 4] = reduce_axes.iter()
-                .map(|&dim| dim as u32)
-                .chain(std::iter::repeat(u32::MAX)) // fill extras
-                .take(4)                            // up to 4
-                .collect::<Vec<_>>()                // produce a Vec<u32>
-                .try_into()                         // convert Vec<u32> into [u32; 4]
+            // Build reduce_axes array; unused entries are filled with u32::MAX.
+            let reduce_axes_arr: [u32; 4] = reduce_axes
+                .iter()
+                .map(|&ax| ax as u32)
+                .chain(std::iter::repeat(u32::MAX))
+                .take(4)
+                .collect::<Vec<_>>()
+                .try_into()
                 .unwrap();
 
-            let push_constants = PushConstants {
+            let push_constants = ReducePushConstants {
                 base,
                 rank,
                 _pad0: [0; 2],
                 shape: shape_arr,
                 stride: stride_arr,
-                reduce_axes,
+                reduce_axes: reduce_axes_arr,
             };
-            println!("{:?}", push_constants);
 
+            // Compute the flattened reduction size (product over all reduction axes).
+            let mut flat_reduction_size = 1u32;
+            for &ax in reduce_axes {
+                flat_reduction_size *= shape_arr[ax];
+            }
+
+            // Use a workgroup size of 256.
+            let wg_size = 256u32;
+            let segments_per_batch = (flat_reduction_size + wg_size - 1) / wg_size;
+
+            // Compute number of batches as product of dimensions not being reduced.
+            let mut num_batches = 1u32;
+            for d in 0..(rank as usize) {
+                if !reduce_axes.contains(&d) {
+                    num_batches *= shape_arr[d];
+                }
+            }
+
+            // Total workgroups for first pass.
+            let total_workgroups = num_batches * segments_per_batch;
+
+            // Allocate two temporary buffers for the partial results:
+            // one for candidate values and one for candidate indices.
+            let buffer_shape = Shape::from(&[total_workgroups as usize]);
+            let mut partial_values = unsafe { device.alloc_uninit(&buffer_shape, result_dtype)? };
+            let mut partial_indices = unsafe { device.alloc_uninit(&buffer_shape, DType::U32)? };
+
+            // Dispatch the partial reduction shader.
             self.execute_compute_kernel(
-                pipeline,
+                partial_pipeline,
                 vec![buffer],
-                vec![(*new_storage.buffer).clone().unwrap()],
-                elem_count,
+                vec![
+                    (*partial_values.buffer).clone().unwrap(),
+                    (*partial_indices.buffer).clone().unwrap(),
+                ],
+                total_workgroups as usize,
                 push_constants,
+                true,
             )?;
+
+            // If more than one segment per batch, dispatch the combining shader.
+            let (final_values, final_indices) = if segments_per_batch > 1 {
+                let combine_constants = CombinePushConstants {
+                    num_partials: segments_per_batch,
+                };
+
+                // Allocate final combine buffers with shape [num_batches].
+                let final_shape = Shape::from(&[num_batches as usize]);
+                let mut final_values = unsafe { device.alloc_uninit(&final_shape, result_dtype)? };
+                let mut final_indices = unsafe { device.alloc_uninit(&final_shape, DType::U32)? };
+
+                self.execute_compute_kernel(
+                    combine_pipeline,
+                    vec![
+                        (*partial_values.buffer).clone().unwrap(),
+                        (*partial_indices.buffer).clone().unwrap(),
+                    ],
+                    vec![
+                        (*final_values.buffer).clone().unwrap(),
+                        (*final_indices.buffer).clone().unwrap(),
+                    ],
+                    num_batches as usize,
+                    combine_constants,
+                    true,
+                )?;
+                (final_values, final_indices)
+            } else {
+                (partial_values, partial_indices)
+            };
+
+            // Compute the output shape by removing reduction axes.
+            let mut output_dims = Vec::new();
+            for d in 0..(rank as usize) {
+                if !reduce_axes.contains(&d) {
+                    output_dims.push(shape_arr[d] as usize);
+                }
+            }
+            let output_shape = Shape::from(&[num_batches as usize]);
+
+            // Allocate final storage.
+            let mut new_storage = unsafe { device.alloc_uninit(&output_shape, result_dtype)? };
+
+            // For operations like argmax/argmin we want indices,
+            // for sum (and others) we want values.
+            if to_index {
+                new_storage.buffer = final_indices.buffer.clone();
+            } else {
+                new_storage.buffer = final_values.buffer.clone();
+            }
 
             Ok(new_storage)
         } else {
-            // Zero-sized buffer, return zero-sized buffer
             Ok(self.clone())
         }
     }
@@ -721,9 +829,40 @@ impl crate::backend::BackendStorage for VulkanStorage {
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         match op {
-            ReduceOp::Max | ReduceOp::Sum => {
-                if let Some(pipeline) = self.device.reduce_pipelines.get(format!("{}{}", op.name(), suffix).as_str()) {
-                    self.reduce_op_impl(layout, s, pipeline)
+            ReduceOp::Max | ReduceOp::Min | ReduceOp::Sum => {
+                if let Some(partial_pipeline) = self
+                    .device
+                    .reduce_partial_pipelines
+                    .get(format!("{}{}", op.name(), suffix).as_str())
+                {
+                    if let Some(combine_pipeline) = self
+                        .device
+                        .reduce_combine_pipelines
+                        .get(format!("{}{}", op.name(), suffix).as_str())
+                    {
+                        self.reduce_op_impl(layout, s, partial_pipeline, combine_pipeline, false)
+                    } else {
+                        fail!()
+                    }
+                } else {
+                    fail!()
+                }
+            }
+            ReduceOp::ArgMax | ReduceOp::ArgMin => {
+                if let Some(partial_pipeline) = self
+                    .device
+                    .reduce_partial_pipelines
+                    .get(format!("{}{}", op.name(), suffix).as_str())
+                {
+                    if let Some(combine_pipeline) = self
+                        .device
+                        .reduce_combine_pipelines
+                        .get(format!("{}{}", op.name(), suffix).as_str())
+                    {
+                        self.reduce_op_impl(layout, s, partial_pipeline, combine_pipeline, true)
+                    } else {
+                        fail!()
+                    }
                 } else {
                     fail!()
                 }
@@ -918,6 +1057,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
     fn copy_strided_src(&self, dst: &mut Self, dst_offset: usize, layout: &Layout) -> Result<()> {
         let suffix = match self.dtype {
             DType::F32 => "",
+            DType::U32 => "_32",
             DType::I64 => "_64",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };

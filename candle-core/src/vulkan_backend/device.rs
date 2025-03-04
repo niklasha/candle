@@ -6,6 +6,7 @@ use crate::{CpuStorage, DType, Result, Shape, VulkanError, VulkanStorage};
 use bytemuck::Pod;
 use half::{bf16, f16};
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use vulkano::buffer::allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
@@ -45,7 +46,8 @@ pub struct VulkanDevice {
     pub(crate) cast_pipelines: Vec<Arc<ComputePipeline>>,
     pub(crate) unary_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) binary_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
-    pub(crate) reduce_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
+    pub(crate) reduce_partial_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
+    pub(crate) reduce_combine_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) affine_elu_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) copy_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) cmp_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
@@ -234,7 +236,7 @@ macro_rules! binary_shaders {
                         #extension GL_EXT_shader_16bit_storage : require
                         #extension GL_AMD_gpu_shader_half_float: enable
 
-                        layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
                         // Buffer bindings
                         layout(set = 0, binding = 0) buffer LhsBuffer {
@@ -359,8 +361,8 @@ macro_rules! binary_shaders {
     };
 }
 
-macro_rules! reduce_shaders {
-    ($( ($mod:ident, $op:literal, $ty:literal, $min:literal) ),* $(,)?) => {
+macro_rules! reduce_partial_shaders {
+    ($( ($mod:ident, $op:literal, $ty:literal, $to_index:literal) ),* $(,)?) => {
         $(
             mod $mod {
                 vulkano_shaders::shader! {
@@ -368,177 +370,296 @@ macro_rules! reduce_shaders {
                     src: "
                         #version 450
 
-                        // Workgroup size; adjust as needed.
-                        layout (local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+                        // --- Reduction Operation Macros ---
+                        // For OP == 0 (SUM)
+                        #if OP == 0
+                            #define REDUCE(a, b, ai, bi) a += b
+                        #else
+                            // For OP == 1 (MAX/ARGMAX) or OP == 2 (MIN/ARGMIN)
+                            #if OP == 1
+                                // For argmax: update if new value is greater,
+                                // or if equal and new index is greater.
+                                #define REDUCE(a, b, ai, bi) if ((a) < (b)) { a = b; ai = bi; }
+                            #elif OP == 2
+                                // For argmin: update if new value is smaller,
+                                // or if equal and new index is greater.
+                                #define REDUCE(a, b, ai, bi) if ((a) > (b)) { a = b; ai = bi; }
+                            #endif
+                        #endif
 
-                        // Input tensor: a flat array of floats.
+                        // Use a workgroup size of 256.
+                        layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+                        // Binding 0: Input tensor buffer.
                         layout(std430, binding = 0) readonly buffer InputBuffer {
                             TYPE data[];
                         };
 
-                        // Output buffer for partial maximum values.
-                        // Each workgroup writes one partial result.
-                        layout(std430, binding = 1) writeonly buffer OutputBuffer {
-                            TYPE partialResult[];
+                        // Binding 1: Partial candidate values.
+                        layout(std430, binding = 1) writeonly buffer PartialValueBuffer {
+                            TYPE partialValues[];
                         };
 
+                        // Binding 2: Partial candidate indices.
+                        layout(std430, binding = 2) writeonly buffer PartialIndexBuffer {
+                            uint partialIndices[];
+                        };
+
+                        // Push constants carrying tensor metadata.
                         layout(push_constant) uniform ReducePushConstants {
-                            uint base;                      // start offset in the src_data buffer
-                            uint rank;                      // number of dimensions
-                            uvec4 shape;                    // up to 4 dims of shape (unused set to 1)
-                            uvec4 stride;                   // up to 4 dims of stride (unused set to 1)
-                            uvec4 reduce_axes;              // bit flags or dimension indices (explained below)
+                            uint base;
+                            uint rank;
+                            uvec4 shape;
+                            uvec4 stride;
+                            uvec4 reduce_axes;
                         } pc;
 
-                        // Shared memory for intra-group reduction.
-                        shared TYPE sdata[512];
+                        // Shared memory arrays for the intra-workgroup reduction.
+                        shared TYPE sdata[256];
+                        shared uint sindex[256];
+                        shared bool svalid[256];
 
-                        // A helper function for computing the physical index in src_data
-                        // from a logical index over the *non‐reduced* dims. For example, if we are
-                        // reducing over dims [1,3], we only iterate the logical space of dims [0,2,...].
-                        uint get_strided_index(uint logical_idx) {
-                            // We'll parse pc.shape & pc.stride to figure out how to unflatten
-                            // the index among only the *non-reduced* axes, then map to physical index.
-                            // This can be done in many ways, here’s one approach:
+                        // Compute the physical offset for a flattened reduction index.
+                        uint compute_reduction_offset(uint flat_index) {
+                            uint offset = 0u;
+                            uint remainder = flat_index;
+                            for (uint i = 0u; i < 4u; i++) {
+                                uint red = pc.reduce_axes[i];
+                                if (red == 0xFFFFFFFFu) break;
+                                uint dim_size = pc.shape[red];
+                                uint idx = remainder % dim_size;
+                                remainder = remainder / dim_size;
+                                offset += idx * pc.stride[red];
+                            }
+                            return offset;
+                        }
 
-                            // Step 1: figure out the product of all non‐reduced dims to decode the index dimension by dimension.
-                            // For instance, if rank=4, shape=[D0, D1, D2, D3],
-                            // and we are reducing over dims 1 & 3, then the logical shape is effectively [D0, D2].
-                            // We'll parse that from reduce_axes.
-
-                            // We'll store the dimension sizes of the non‐reduced axes in a small local array:
-                            uint red_shape[4];
-                            uint red_stride[4];
-                            uint red_rank = 0;
-                            // We'll fill red_shape[] with the dims that are not in reduce_axes
-                            // likewise for red_stride[]
-
-                            for (uint d = 0; d < pc.rank; d++) {
-                                // Suppose if reduce_axes.x..y..z..w are dimension indices that are reduced,
-                                // or if they are 0xFFFFFFFF if unused. We'll do a quick check:
-                                bool is_reduced = false;
-                                if (pc.reduce_axes.x == d || pc.reduce_axes.y == d ||
-                                    pc.reduce_axes.z == d || pc.reduce_axes.w == d) {
-                                    is_reduced = true;
-                                }
-                                if (is_reduced) {
-                                    // This dimension is not reduced, so we store it in red_shape[] and red_stride[]
-                                    red_shape[red_rank]  = pc.shape[d];
-                                    red_stride[red_rank] = pc.stride[d];
-                                    red_rank++;
+                        // Compute the base index for non-reduced dimensions from a logical batch index.
+                        uint get_base_index(uint logical_idx) {
+                            uint out_shape[4];
+                            uint out_stride[4];
+                            uint out_rank = 0;
+                            for (uint d = 0u; d < pc.rank; d++) {
+                                bool is_reduced = (pc.reduce_axes.x == d ||
+                                                   pc.reduce_axes.y == d ||
+                                                   pc.reduce_axes.z == d ||
+                                                   pc.reduce_axes.w == d);
+                                if (!is_reduced) {
+                                    out_shape[out_rank] = pc.shape[d];
+                                    out_stride[out_rank] = pc.stride[d];
+                                    out_rank++;
                                 }
                             }
-
-                            // Now logical_idx ranges from [0 .. product(all non-reduced dims) ).
-                            // We'll decode dimension by dimension in the non-reduced rank.
-
                             uint remaining = logical_idx;
-                            uint phys_idx = 0;
-                            for (uint i = 0; i < red_rank; i++) {
-                                // product of subsequent dims
+                            uint phys_idx = 0u;
+                            for (uint i = 0u; i < out_rank; i++) {
                                 uint prod = 1u;
-                                for (uint j = i + 1; j < red_rank; j++) {
-                                    prod *= red_shape[j];
+                                for (uint j = i + 1u; j < out_rank; j++) {
+                                    prod *= out_shape[j];
                                 }
-                                uint coordinate = remaining / prod;     // index along dimension i
+                                uint coordinate = remaining / prod;
                                 remaining = remaining % prod;
-                                phys_idx += coordinate * red_stride[i];
+                                phys_idx += coordinate * out_stride[i];
                             }
-
-                            // Finally, add the base offset:
                             return pc.base + phys_idx;
                         }
 
-                        void max_op() {
-                            uint global_id   = gl_GlobalInvocationID.x;
-                            uint local_id    = gl_LocalInvocationID.x;
-
-                            // Calculate the product of the non-reduced dimensions
-                            uint total_size  = 1;
-                            for (uint d = 0; d < pc.rank; d++) {
-                                bool is_reduced = false;
-                                if (pc.reduce_axes.x == d || pc.reduce_axes.y == d ||
-                                    pc.reduce_axes.z == d || pc.reduce_axes.w == d) {
-                                    is_reduced = true;
-                                }
-                                if (is_reduced) {
-                                    total_size *= pc.shape[d];
-                                }
-                            }
-
-                            // Each thread processes multiple elements
-                            uint total_threads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
-
-                            TYPE maxVal = MIN;
-
-                            // Loop over all relevant indices in the non-reduced space
-                            for (uint i = global_id; i < total_size; i += total_threads) {
-                                uint src_index = get_strided_index(i);
-                                maxVal = max(maxVal, data[src_index]);
-                            }
-
-                            // Store the per-thread maximum in shared memory
-                            sdata[local_id] = maxVal;
-                            barrier();
-
-                            // Perform a parallel reduction within the workgroup
-                            for (uint offset = gl_WorkGroupSize.x / 2; offset > 0; offset >>= 1) {
-                                if (local_id < offset) {
-                                    sdata[local_id] = max(sdata[local_id], sdata[local_id + offset]);
-                                }
-                                barrier();
-                            }
-
-                            // The first thread in each workgroup writes out the partial result
-                            if (local_id == 0) {
-                                partialResult[gl_WorkGroupID.x] = sdata[0];
-                            }
-                        }
-
-                        void sum_op() {
-                            uint global_id     = gl_GlobalInvocationID.x;
-                            uint local_id      = gl_LocalInvocationID.x;
-                            uint total_threads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
-
-                            // (1) Product of non-reduced dims
-                            uint total_size = 1;
-                            for (uint d = 0; d < pc.rank; d++) {
-                                bool is_reduced = false;
-                                if (pc.reduce_axes.x == d || pc.reduce_axes.y == d ||
-                                    pc.reduce_axes.z == d || pc.reduce_axes.w == d) {
-                                    is_reduced = true;
-                                }
-                                if (is_reduced) {
-                                    total_size *= pc.shape[d];
-                                }
-                            }
-
-                            TYPE sumVal = 0;
-                            for (uint i = global_id; i < total_size; i += total_threads) {
-                                uint src_index = get_strided_index(i);
-                                sumVal += data[src_index];
-                            }
-
-                            sdata[local_id] = sumVal;
-                            barrier();
-
-                            for (uint offset = gl_WorkGroupSize.x / 2; offset > 0; offset >>= 1) {
-                                if (local_id < offset) {
-                                    sdata[local_id] += sdata[local_id + offset];
-                                }
-                                barrier();
-                            }
-
-                            if (local_id == 0) {
-                                partialResult[gl_WorkGroupID.x] = sdata[0];
-                            }
-                        }
-
                         void main() {
-                            OP();
+                            uint local_id = gl_LocalInvocationID.x;
+                            uint wg_size = gl_WorkGroupSize.x; // 256
+
+                            // Compute the flattened reduction size (product over all reduction axes).
+                            uint flatReductionSize = 1u;
+                            for (uint i = 0u; i < 4u; i++) {
+                                uint red = pc.reduce_axes[i];
+                                if (red == 0xFFFFFFFFu) break;
+                                flatReductionSize *= pc.shape[red];
+                            }
+
+                            // Divide the flattened reduction space into segments.
+                            uint segments_per_batch = (flatReductionSize + wg_size - 1u) / wg_size;
+                            uint global_wgid = gl_WorkGroupID.x;
+                            uint batch_id   = global_wgid / segments_per_batch;
+                            uint segment_id = global_wgid % segments_per_batch;
+
+                            // Compute the base index for this batch.
+                            uint base_idx = get_base_index(batch_id);
+
+                            // Determine segment start and segment length.
+                            uint seg_start = segment_id * wg_size;
+                            uint seg_length = flatReductionSize - seg_start;
+                            if (seg_length > wg_size) seg_length = wg_size;
+
+                            bool hasValue = false;
+                            TYPE candidate_val = 0;
+                            uint candidate_idx = 0u;
+
+                            // Each thread processes a strided subset of the segment.
+                            for (uint i = local_id; i < seg_length; i += wg_size) {
+                                uint flat_idx = seg_start + i;
+                                uint red_offset = compute_reduction_offset(flat_idx);
+                                uint src_index = base_idx + red_offset;
+                                TYPE val = data[src_index];
+                                if (!hasValue) {
+                                    candidate_val = val;
+                                    candidate_idx = flat_idx;
+                                    hasValue = true;
+                                } else {
+                                    REDUCE(candidate_val, val, candidate_idx, flat_idx);
+                                }
+                            }
+
+                            sdata[local_id] = candidate_val;
+                            sindex[local_id] = candidate_idx;
+                            svalid[local_id] = hasValue;
+                            barrier();
+
+                            // Use the actual number of loaded elements (seg_length) for reduction.
+                            uint laneCount = seg_length;
+                            while (laneCount > 1u) {
+                                uint newCount = (laneCount + 1u) >> 1u;
+                                if (local_id < newCount) {
+                                    uint partner = local_id + newCount;
+                                    if (partner < laneCount) {
+                                        bool validA = svalid[local_id];
+                                        bool validB = svalid[partner];
+                                        if (!validA && validB) {
+                                            sdata[local_id] = sdata[partner];
+                                            sindex[local_id] = sindex[partner];
+                                            svalid[local_id] = true;
+                                        } else if (validA && validB) {
+                                            REDUCE(sdata[local_id], sdata[partner],
+                                                   sindex[local_id], sindex[partner]);
+                                        }
+                                    }
+                                }
+                                barrier();
+                                laneCount = newCount;
+                            }
+
+                            // Write the partial result for this workgroup.
+                            if (local_id == 0u) {
+                                partialValues[global_wgid] = sdata[0];
+                                partialIndices[global_wgid] = sindex[0];
+                            }
                         }
                     ",
-                    define: [("OP", $op), ("TYPE", $ty), ("MIN", $min)]
+                    define: [("OP", $op), ("TYPE", $ty), ("TO_INDEX", $to_index)]
+                }
+            }
+        )*
+    };
+}
+
+macro_rules! reduce_combine_shaders {
+    ($( ($mod:ident, $op:literal, $ty:literal, $to_index:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    src: "
+                        #version 450
+
+                        #if OP == 0
+                            #define REDUCE(a, b, ai, bi) a += b
+                        #else
+                            #if OP == 1
+                                #define REDUCE(a, b, ai, bi) if ((a) < (b)) { a = b; ai = bi; }
+                            #elif OP == 2
+                                #define REDUCE(a, b, ai, bi) if ((a) > (b)) { a = b; ai = bi; }
+                            #endif
+                        #endif
+
+                        // Use a workgroup size of 256.
+                        layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+                        // Binding 0: Partial candidate values.
+                        layout(std430, binding = 0) readonly buffer PartialValueBuffer {
+                            TYPE partialValues[];
+                        };
+
+                        // Binding 1: Partial candidate indices.
+                        layout(std430, binding = 1) readonly buffer PartialIndexBuffer {
+                            uint partialIndices[];
+                        };
+
+                        // Binding 2: Final candidate values (output).
+                        layout(std430, binding = 2) writeonly buffer FinalValueBuffer {
+                            TYPE finalValues[];
+                        };
+
+                        // Binding 3: Final candidate indices (output).
+                        layout(std430, binding = 3) writeonly buffer FinalIndexBuffer {
+                            uint finalIndices[];
+                        };
+
+                        // Push constant: number of partials per batch.
+                        layout(push_constant) uniform CombinePushConstants {
+                            uint num_partials;
+                        } pc;
+
+                        // Shared memory arrays for reduction.
+                        shared TYPE sdata[256];
+                        shared uint sindex[256];
+                        shared bool svalid[256];
+
+                        void main() {
+                            uint local_id = gl_LocalInvocationID.x;
+                            // Each workgroup reduces the partial results for one batch.
+                            uint batch_id = gl_WorkGroupID.x;
+                            uint base_idx = batch_id * pc.num_partials;
+
+                            bool hasValue = false;
+                            TYPE candidate_val = 0;
+                            uint candidate_idx = 0u;
+
+                            // Each thread loads a subset of the partials.
+                            for (uint i = local_id; i < pc.num_partials; i += gl_WorkGroupSize.x) {
+                                uint idx = base_idx + i;
+                                TYPE val = partialValues[idx];
+                                uint ind = partialIndices[idx];
+                                if (!hasValue) {
+                                    candidate_val = val;
+                                    candidate_idx = ind;
+                                    hasValue = true;
+                                } else {
+                                    REDUCE(candidate_val, val, candidate_idx, ind);
+                                }
+                            }
+                            sdata[local_id] = candidate_val;
+                            sindex[local_id] = candidate_idx;
+                            svalid[local_id] = hasValue;
+                            barrier();
+
+                            uint laneCount = pc.num_partials;
+                            while (laneCount > 1u) {
+                                uint newCount = (laneCount + 1u) >> 1u;
+                                if (local_id < newCount) {
+                                    uint partner = local_id + newCount;
+                                    if (partner < laneCount) {
+                                        bool validA = svalid[local_id];
+                                        bool validB = svalid[partner];
+                                        if (!validA && validB) {
+                                            sdata[local_id] = sdata[partner];
+                                            sindex[local_id] = sindex[partner];
+                                            svalid[local_id] = true;
+                                        } else if (validA && validB) {
+                                            REDUCE(sdata[local_id], sdata[partner],
+                                                   sindex[local_id], sindex[partner]);
+                                        }
+                                    }
+                                }
+                                barrier();
+                                laneCount = newCount;
+                            }
+
+                            if (local_id == 0u) {
+                                finalValues[batch_id] = sdata[0];
+                                finalIndices[batch_id] = sindex[0];
+                            }
+                        }
+                    ",
+                    define: [("OP", $op), ("TYPE", $ty), ("TO_INDEX", $to_index)]
                 }
             }
         )*
@@ -553,7 +674,7 @@ macro_rules! affine_elu_shaders {
                     ty: "compute",
                     src: "
                         #version 450
-                        layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
                         // Buffer bindings.
                         layout(set = 0, binding = 0) buffer InputBuffer {
@@ -696,8 +817,8 @@ macro_rules! copy_strided_src_shaders {
                         #version 450
                         #extension GL_ARB_gpu_shader_int64 : require
 
-                        // Use a 512-thread 1D workgroup.
-                        layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+                        // Use a 256-thread 1D workgroup.
+                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
                         // Source buffer (read-only).
                         layout(set = 0, binding = 0) readonly buffer SrcBuffer {
@@ -777,7 +898,7 @@ macro_rules! cmp_shaders {
                     ty: "compute",
                     src: "
                         #version 450
-                        layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
                         // Input buffers containing values of type TYPE.
                         layout(set = 0, binding = 0) buffer LhsBuffer {
@@ -836,7 +957,7 @@ impl VulkanDevice {
                         | MemoryTypeFilter::HOST_RANDOM_ACCESS,
                     ..Default::default()
                 },
-                buffer.size(),
+                buffer.size() / size_of::<T>() as DeviceSize,
             )
             .map_err(VulkanError::ValidatedAllocateBufferError)?;
 
@@ -1353,11 +1474,30 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "mul"          => mul_shader,
         );
 
-        reduce_shaders!(
-            (max_shader, "max_op", "float", "-3.402823466e+38"),
-            (sum_shader, "sum_op", "float", "-3.402823466e+38"),
-            (max_shader_u32, "max_op", "uint", "0"),
-            (sum_shader_u32, "sum_op", "uint", "0"),
+        reduce_partial_shaders!(
+            (sum_partial_shader, "0", "float", "0"),
+            (sum_partial_shader_u32, "0", "uint", "0"),
+            (argmax_partial_shader, "1", "float", "1"),
+            (max_partial_shader, "1", "float", "0"),
+            (argmax_partial_shader_u32, "1", "uint", "1"),
+            (max_partial_shader_u32, "1", "uint", "0"),
+            (argmin_partial_shader, "2", "float", "1"),
+            (min_partial_shader, "2", "float", "0"),
+            (argmin_partial_shader_u32, "2", "uint", "1"),
+            (min_partial_shader_u32, "2", "uint", "0"),
+        );
+
+        reduce_combine_shaders!(
+            (sum_combine_shader, "0", "float", "0"),
+            (sum_combine_shader_u32, "0", "uint", "0"),
+            (argmax_combine_shader, "1", "float", "1"),
+            (max_combine_shader, "1", "float", "0"),
+            (argmax_combine_shader_u32, "1", "uint", "1"),
+            (max_combine_shader_u32, "1", "uint", "0"),
+            (argmin_combine_shader, "2", "float", "1"),
+            (min_combine_shader, "2", "float", "0"),
+            (argmin_combine_shader_u32, "2", "uint", "1"),
+            (min_combine_shader_u32, "2", "uint", "0"),
         );
 
         macro_rules! load_reduce_pipelines {
@@ -1367,7 +1507,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
                 use vulkano::pipeline::PipelineShaderStageCreateInfo;
                 use std::sync::Arc;
                 use std::collections::HashMap;
-                use crate::VulkanError; // Your existing error handling enum.
+                use crate::VulkanError;
 
                 let mut map = HashMap::new();
                 $(
@@ -1390,12 +1530,32 @@ impl crate::backend::BackendDevice for VulkanDevice {
             }};
         }
 
-        let reduce_pipelines = load_reduce_pipelines!(
+        let reduce_partial_pipelines = load_reduce_pipelines!(
             device,
-            "max"          => max_shader,
-            "sum"          => sum_shader,
-            "max_u32"      => max_shader_u32,
-            "sum_u32"      => sum_shader_u32,
+            "argmax"       => argmax_partial_shader,
+            "argmax_u32"   => argmax_partial_shader_u32,
+            "argmin"       => argmin_partial_shader,
+            "argmin_u32"   => argmin_partial_shader_u32,
+            "max"          => max_partial_shader,
+            "max_u32"      => max_partial_shader_u32,
+            "min"          => min_partial_shader,
+            "min_u32"      => min_partial_shader_u32,
+            "sum"          => sum_partial_shader,
+            "sum_u32"      => sum_partial_shader_u32,
+        );
+
+        let reduce_combine_pipelines = load_reduce_pipelines!(
+            device,
+            "argmax"       => argmax_combine_shader,
+            "argmax_u32"   => argmax_combine_shader_u32,
+            "argmin"       => argmin_combine_shader,
+            "argmin_u32"   => argmin_combine_shader_u32,
+            "max"          => max_combine_shader,
+            "max_u32"      => max_combine_shader_u32,
+            "min"          => min_combine_shader,
+            "min_u32"      => min_combine_shader_u32,
+            "sum"          => sum_combine_shader,
+            "sum_u32"      => sum_combine_shader_u32,
         );
 
         affine_elu_shaders!((affine_shader, "affine_op"), (elu_shader, "elu_op"),);
@@ -1438,6 +1598,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
 
         copy_strided_src_shaders!(
             (copy_strided_src_shader, "float"),
+            (copy_strided_src_shader_32, "uint"),
             (copy_strided_src_shader_64, "int64_t"),
         );
 
@@ -1474,6 +1635,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "copy2d" => copy2d_shader,
             "copy2d_64" => copy2d_shader_64,
             "copy_strided_src" => copy_strided_src_shader,
+            "copy_strided_src_32" => copy_strided_src_shader_32,
             "copy_strided_src_64" => copy_strided_src_shader_64,
         );
 
@@ -1530,7 +1692,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
             cast_pipelines,
             unary_pipelines,
             binary_pipelines,
-            reduce_pipelines,
+            reduce_partial_pipelines,
+            reduce_combine_pipelines,
             affine_elu_pipelines,
             copy_pipelines,
             cmp_pipelines,
