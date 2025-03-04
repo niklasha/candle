@@ -351,6 +351,20 @@ macro_rules! binary_shaders {
                             output_data[idx] = lhs_data[a_idx] * rhs_data[b_idx];
                         }
 
+                        void min_op() {
+                            uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index_a(idx);
+                            uint b_idx = get_strided_index_b(idx);
+                            output_data[idx] = min(lhs_data[a_idx], rhs_data[b_idx]);
+                        }
+
+                        void max_op() {
+                            uint idx = gl_GlobalInvocationID.x;
+                            uint a_idx = get_strided_index_a(idx);
+                            uint b_idx = get_strided_index_b(idx);
+                            output_data[idx] = max(lhs_data[a_idx], rhs_data[b_idx]);
+                        }
+
                         // Conditional main() selection based on the define.
                         void main() { OP(); }
                     ",
@@ -1434,6 +1448,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
             (sub_shader, "sub_op", "float"),
             (div_shader, "div_op", "float"),
             (mul_shader, "mul_op", "float"),
+            (min_shader, "min_op", "float"),
+            (max_shader, "max_op", "float"),
         );
 
         macro_rules! load_binary_pipelines {
@@ -1472,6 +1488,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "sub"          => sub_shader,
             "div"          => div_shader,
             "mul"          => mul_shader,
+            "minimum"      => min_shader,
+            "maximum"      => max_shader,
         );
 
         reduce_partial_shaders!(
