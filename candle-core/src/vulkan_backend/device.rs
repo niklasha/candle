@@ -195,10 +195,14 @@ macro_rules! unary_shaders {
                             output_data[idx] = OUTER_TYPE(floor(INNER_TYPE(input_data[idx])));
                         }
 
+                        float c_round(float x) {
+                            return (x >= 0.0) ? floor(x + 0.5) : ceil(x - 0.5);
+                        }
+
                         void round_op() {
                             uint idx = gl_GlobalInvocationID.x;
                             uint a_idx = get_strided_index(idx);
-                            output_data[idx] = OUTER_TYPE(round(INNER_TYPE(input_data[idx])));
+                            output_data[idx] = OUTER_TYPE(c_round(INNER_TYPE(input_data[idx])));
                         }
 
                         void sign_op() {
