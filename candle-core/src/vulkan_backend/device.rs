@@ -1135,7 +1135,7 @@ impl VulkanDevice {
 }
 
 macro_rules! cast_shaders {
-    ($( ($mod:ident, $src:literal, $dst:literal) ),* $(,)?) => {
+    ($( ($mod:ident, $src:literal, $dst:literal, $need_uint_cast:literal) ),* $(,)?) => {
         $(
             mod $mod {
                 // This macro invocation creates a shader module at compile time.
@@ -1147,6 +1147,12 @@ macro_rules! cast_shaders {
                         #extension GL_EXT_shader_8bit_storage : require
                         #extension GL_EXT_shader_16bit_storage : require
                         #extension GL_AMD_gpu_shader_half_float: enable
+
+                        #if NEED_UINT_CAST
+                            #define CAST(x) uint(x)
+                        #else
+                            #define CAST(x) x
+                        #endif
 
                         layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
                         layout(set = 0, binding = 0) buffer Input {
@@ -1197,9 +1203,9 @@ macro_rules! cast_shaders {
 
                         void main() {
                             uint idx = get_strided_index(gl_GlobalInvocationID.x);
-                            output_data[idx] = DST_TYPE(input_data[idx]);
+                            output_data[idx] = DST_TYPE(CAST(input_data[idx]));
                         }",
-                    define: [("SRC_TYPE", $src), ("DST_TYPE", $dst)]
+                    define: [("SRC_TYPE", $src), ("DST_TYPE", $dst),("NEED_UINT_CAST", $need_uint_cast)]
                 }
             }
         )*
@@ -1304,10 +1310,11 @@ impl crate::backend::BackendDevice for VulkanDevice {
 
         let cast_pipelines = {
             cast_shaders!(
-                (float_to_half, "float", "float16_t"),
-                (half_to_float, "float16_t", "float"),
-                (uint_to_float, "uint", "float"),
-                (uint_to_uint8_t, "uint", "uint8_t")
+                (float_to_half, "float", "float16_t", "0"),
+                (half_to_float, "float16_t", "float", "0"),
+                (uint_to_float, "uint", "float", "0"),
+                (uint_to_uint8_t, "uint", "uint8_t", "0"),
+                (uint8_t_to_float, "uint8_t", "float", "1")
             );
             let shaders = [
                 float_to_half::load(device.clone())
@@ -1321,6 +1328,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
                 half_to_float::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
                 uint_to_float::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
                 uint_to_uint8_t::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
+                uint8_t_to_float::load(device.clone())
+                    .map_err(VulkanError::ValidatedVulkanError)?,
             ];
             // Create the pipelines
             shaders
