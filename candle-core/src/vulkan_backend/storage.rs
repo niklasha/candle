@@ -943,11 +943,15 @@ impl crate::backend::BackendStorage for VulkanStorage {
                 if let Some(pipeline) = self.device.binary_pipelines.get(B::NAME) {
                     self.binary_op_impl(layout, rhs, rhs_layout, pipeline)
                 } else {
-                    fail!()
+                    todo!("Unsupported binary op {}", B::NAME);
                 }
             }
             _ => {
-                fail!()
+                todo!(
+                    "Unsupported dtype combo {:?} {:?}",
+                    self.dtype(),
+                    rhs.dtype()
+                );
             }
         }
     }
