@@ -1141,6 +1141,7 @@ macro_rules! cast_shaders {
                     src: "
                         #version 450
                         #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+                        #extension GL_EXT_shader_8bit_storage : require
                         #extension GL_EXT_shader_16bit_storage : require
                         #extension GL_AMD_gpu_shader_half_float: enable
 
@@ -1225,6 +1226,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             ..DeviceExtensions::empty()
         };
         let required_features = DeviceFeatures {
+            uniform_and_storage_buffer8_bit_access: true,
             storage_buffer16_bit_access: true,
             shader_int64: true,
             ..DeviceFeatures::empty()
@@ -1301,7 +1303,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
             cast_shaders!(
                 (float_to_half, "float", "float16_t"),
                 (half_to_float, "float16_t", "float"),
-                (uint_to_float, "uint", "float")
+                (uint_to_float, "uint", "float"),
+                (uint_to_uint8_t, "uint", "uint8_t")
             );
             let shaders = [
                 float_to_half::load(device.clone())
@@ -1314,6 +1317,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
                     })?,
                 half_to_float::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
                 uint_to_float::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
+                uint_to_uint8_t::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
             ];
             // Create the pipelines
             shaders

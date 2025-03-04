@@ -909,7 +909,10 @@ impl crate::backend::BackendStorage for VulkanStorage {
             (DType::U32, DType::F32) => {
                 self.unary_op_impl(layout, &self.device.cast_pipelines[2], dtype)
             }
-            _ => fail!(),
+            (DType::U32, DType::U8) => {
+                self.unary_op_impl(layout, &self.device.cast_pipelines[3], dtype)
+            }
+            _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, dtype),
         }
     }
 
