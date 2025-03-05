@@ -1,13 +1,11 @@
 #![allow(dead_code)]
 
 use crate::backend::{BackendDevice, BackendStorage};
-use crate::cpu_backend::{binary_map, binary_map_vec};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
-use candle_vulkan_kernels::Source;
 use std::fmt;
 use std::sync::Arc;
-use vulkano::buffer::{Buffer, BufferContents, Subbuffer};
+use vulkano::buffer::{BufferContents, Subbuffer};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryCommandBufferAbstract,
 };
@@ -84,7 +82,7 @@ impl VulkanStorage {
 
         // Bind pipeline and descriptors
         let offset = input_buffers.len();
-        let mut bindings = input_buffers
+        let bindings = input_buffers
             .into_iter()
             .enumerate()
             .map(|(i, buf)| WriteDescriptorSet::buffer(i as u32, buf))
@@ -419,8 +417,8 @@ impl VulkanStorage {
             // Allocate two temporary buffers for the partial results:
             // one for candidate values and one for candidate indices.
             let buffer_shape = Shape::from(&[total_workgroups as usize]);
-            let mut partial_values = unsafe { device.alloc_uninit(&buffer_shape, result_dtype)? };
-            let mut partial_indices = unsafe { device.alloc_uninit(&buffer_shape, DType::U32)? };
+            let partial_values = unsafe { device.alloc_uninit(&buffer_shape, result_dtype)? };
+            let partial_indices = unsafe { device.alloc_uninit(&buffer_shape, DType::U32)? };
 
             // Dispatch the partial reduction shader.
             self.execute_compute_kernel(
@@ -443,8 +441,8 @@ impl VulkanStorage {
 
                 // Allocate final combine buffers with shape [num_batches].
                 let final_shape = Shape::from(&[num_batches as usize]);
-                let mut final_values = unsafe { device.alloc_uninit(&final_shape, result_dtype)? };
-                let mut final_indices = unsafe { device.alloc_uninit(&final_shape, DType::U32)? };
+                let final_values = unsafe { device.alloc_uninit(&final_shape, result_dtype)? };
+                let final_indices = unsafe { device.alloc_uninit(&final_shape, DType::U32)? };
 
                 self.execute_compute_kernel(
                     combine_pipeline,
