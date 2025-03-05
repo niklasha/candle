@@ -3,31 +3,55 @@
 mod device;
 
 pub use device::VulkanDevice;
-use std::sync::{MutexGuard, PoisonError};
+use std::sync::{PoisonError, TryLockError};
 mod storage;
 pub use storage::VulkanStorage;
 
+/// Simple way to catch lock error without
+/// depending on T
+#[derive(thiserror::Error, Debug)]
+pub enum LockError {
+    #[error("{0}")]
+    Poisoned(String),
+    #[error("Would block")]
+    WouldBlock,
+}
+
+impl<T> From<TryLockError<T>> for VulkanError {
+    fn from(value: TryLockError<T>) -> Self {
+        match value {
+            TryLockError::Poisoned(p) => VulkanError::LockError(LockError::Poisoned(p.to_string())),
+            TryLockError::WouldBlock => VulkanError::LockError(LockError::WouldBlock),
+        }
+    }
+}
+
+impl<T> From<PoisonError<T>> for VulkanError {
+    fn from(p: PoisonError<T>) -> Self {
+        VulkanError::LockError(LockError::Poisoned(p.to_string()))
+    }
+}
 #[derive(thiserror::Error, Debug)]
 pub enum VulkanError {
     #[error("{0}")]
     Message(String),
-    //    #[error(transparent)]
-    //    PoisonError(#[from] PoisonError<MutexGuard<'static, u64>>),
     #[error(transparent)]
     LoadingError(#[from] vulkano::LoadingError),
     #[error("{0:?}")]
+    LockError(#[from] LockError),
+    #[error("{0:?}")]
     ValidatedVulkanError(#[from] vulkano::Validated<vulkano::VulkanError>),
-    #[error(transparent)]
+    #[error("{0:?}")]
     VulkanError(#[from] vulkano::VulkanError),
-    #[error(transparent)]
+    #[error("{0:?}")]
     ValidationError(#[from] Box<vulkano::ValidationError>),
-    #[error(transparent)]
+    #[error("{0:?}")]
     ValidatedAllocateBufferError(#[from] vulkano::Validated<vulkano::buffer::AllocateBufferError>),
-    #[error(transparent)]
+    #[error("{0:?}")]
     MemoryAllocatorError(#[from] vulkano::memory::allocator::MemoryAllocatorError),
-    #[error(transparent)]
+    #[error("{0:?}")]
     CommandBufferExecError(#[from] vulkano::command_buffer::CommandBufferExecError),
-    #[error(transparent)]
+    #[error("{0:?}")]
     IntoPipelineLayoutCreateInfoError(
         #[from] vulkano::pipeline::layout::IntoPipelineLayoutCreateInfoError,
     ),

@@ -1933,11 +1933,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
     }
 
     fn set_seed(&self, seed: u64) -> Result<()> {
-        // let mut global_seed = self.global_seed.lock().map_err(VulkanError::PoisonError)?;
-        let mut global_seed = self
-            .global_seed
-            .lock()
-            .map_err(|e| VulkanError::Message(e.to_string()))?;
+        let mut global_seed = self.global_seed.lock().map_err(VulkanError::from)?;
         *global_seed = seed;
         Ok(())
     }
