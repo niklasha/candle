@@ -3,15 +3,16 @@
 mod device;
 
 pub use device::VulkanDevice;
-use std::fmt;
+use std::sync::{MutexGuard, PoisonError};
 mod storage;
-use crate::op::CmpOp;
 pub use storage::VulkanStorage;
 
 #[derive(thiserror::Error, Debug)]
 pub enum VulkanError {
     #[error("{0}")]
     Message(String),
+    //    #[error(transparent)]
+    //    PoisonError(#[from] PoisonError<MutexGuard<'static, u64>>),
     #[error(transparent)]
     LoadingError(#[from] vulkano::LoadingError),
     #[error("{0:?}")]
