@@ -1,7 +1,5 @@
 use super::{GgmlDType, QStorage};
-use crate::backend::BackendStorage;
 use crate::{DType, Result, Shape, VulkanDevice, VulkanStorage};
-use std::sync::Arc;
 
 pub struct QVulkanStorage {
     dtype: GgmlDType,

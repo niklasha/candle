@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
 use crate::backend::BackendStorage;
-use crate::op::{BinaryOpT, UnaryOpT};
-use crate::{CpuStorage, DType, Result, Shape, VulkanError, VulkanStorage};
+use crate::{CpuStorage, CpuStorageRef, DType, Result, Shape, VulkanError, VulkanStorage};
 use bytemuck::Pod;
 use half::{bf16, f16};
 use std::collections::HashMap;
@@ -29,7 +28,7 @@ use vulkano::memory::allocator::{
 };
 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{Pipeline, PipelineLayout, PipelineShaderStageCreateInfo};
+use vulkano::pipeline::{PipelineLayout, PipelineShaderStageCreateInfo};
 use vulkano::sync::GpuFuture;
 use vulkano::{DeviceSize, VulkanLibrary};
 
@@ -51,6 +50,8 @@ pub struct VulkanDevice {
     pub(crate) affine_elu_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) copy_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) cmp_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
+    pub(crate) rand_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
+    pub(crate) global_seed: Arc<Mutex<u64>>,
 }
 
 enum DataSource<'a, T> {
@@ -946,6 +947,56 @@ macro_rules! cmp_shaders {
     };
 }
 
+macro_rules! rand_shaders {
+    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    src: "
+                        #version 450
+
+                        layout(set = 0, binding = 0) uniform SeedUniform {
+                            uint globalSeed;
+                        };
+
+                        layout(set = 0, binding = 1) buffer OutputBuffer {
+                            float values[];
+                        } outBuffer;
+
+                        uint hash(uint x) {
+                            x = (x ^ 61u) ^ (x >> 16);
+                            x *= 9u;
+                            x = x ^ (x >> 4);
+                            x *= 0x27d4eb2du;
+                            x = x ^ (x >> 15);
+                            return x;
+                        }
+
+                        // Stateless PCG32: given a unique index and the global seed, produce a random float in [0,1)
+                        float pcg32_stateless(uint index, uint seed) {
+                            // Combine the index with the global seed.
+                            uint state = hash(index ^ seed);
+
+                            // PCG-XSH-RR output function (one iteration of xorshift mixing):
+                            state ^= state << 13;
+                            state ^= state >> 17;
+                            state ^= state << 5;
+                            return float(state) / 4294967296.0;  // scale to [0,1)
+                        }
+
+                        void main() {
+                            uint idx = gl_GlobalInvocationID.x;
+                            outBuffer.values[idx] =pcg32_stateless(idx, globalSeed);
+                        }
+                    ",
+                    define: [("OP", $op), ("TYPE", $ty)]
+                }
+            }
+        )*
+    };
+}
+
 impl VulkanDevice {
     fn select_physical_device(
         instance: &Arc<Instance>,
@@ -1405,7 +1456,6 @@ impl crate::backend::BackendDevice for VulkanDevice {
                 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
                 use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
                 use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                use std::sync::Arc;
                 use std::collections::HashMap;
                 use crate::VulkanError; // Your existing error handling enum.
 
@@ -1477,7 +1527,6 @@ impl crate::backend::BackendDevice for VulkanDevice {
                 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
                 use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
                 use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                use std::sync::Arc;
                 use std::collections::HashMap;
                 use crate::VulkanError; // Your existing error handling enum.
 
@@ -1543,7 +1592,6 @@ impl crate::backend::BackendDevice for VulkanDevice {
                 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
                 use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
                 use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                use std::sync::Arc;
                 use std::collections::HashMap;
                 use crate::VulkanError;
 
@@ -1604,7 +1652,6 @@ impl crate::backend::BackendDevice for VulkanDevice {
                  use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
                  use vulkano::pipeline::PipelineShaderStageCreateInfo;
                  use std::collections::HashMap;
-                 use std::sync::Arc;
                  let mut map = HashMap::new();
                  $(
                      let shader = $mod::load($device.clone())
@@ -1646,7 +1693,6 @@ impl crate::backend::BackendDevice for VulkanDevice {
                  use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
                  use vulkano::pipeline::PipelineShaderStageCreateInfo;
                  use std::collections::HashMap;
-                 use std::sync::Arc;
                  let mut map = HashMap::new();
                  $(
                      let shader = $mod::load($device.clone())
@@ -1691,7 +1737,6 @@ impl crate::backend::BackendDevice for VulkanDevice {
                     use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
                     use vulkano::pipeline::PipelineShaderStageCreateInfo;
                     use std::collections::HashMap;
-                    use std::sync::Arc;
                     let mut map = HashMap::new();
                     $(
                         let shader = $mod::load($device.clone())
@@ -1724,6 +1769,44 @@ impl crate::backend::BackendDevice for VulkanDevice {
             "Ge" => cmp_ge_shader,
         );
 
+        rand_shaders!((rand_uniform_shader, "XXX", "XXX"));
+        rand_shaders!((rand_normal_shader, "XXX", "XXX"));
+
+        macro_rules! load_rand_pipelines {
+            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {
+                {
+                    use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
+                    use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
+                    use vulkano::pipeline::PipelineShaderStageCreateInfo;
+                    use std::collections::HashMap;
+                    let mut map = HashMap::new();
+                    $(
+                        let shader = $mod::load($device.clone())
+                            .map_err(VulkanError::ValidatedVulkanError)?;
+                        let entry_point = shader.entry_point("main")
+                            .ok_or_else(|| VulkanError::Message(format!("Missing rand entry point for {}", $name)))?;
+                        let stage = PipelineShaderStageCreateInfo::new(entry_point);
+                        let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+                            .into_pipeline_layout_create_info($device.clone())
+                            .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
+                        let layout = PipelineLayout::new($device.clone(), layout_info)
+                            .map_err(VulkanError::ValidatedVulkanError)?;
+                        let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
+                        let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
+                            .map_err(VulkanError::ValidatedVulkanError)?;
+                        map.insert($name, pipeline);
+                    )*
+                    map
+                }
+            };
+        }
+
+        let rand_pipelines = load_rand_pipelines!(
+            device,
+            "rand_uniform" => rand_uniform_shader,
+            "rand_normal" => rand_normal_shader,
+        );
+
         Ok(Self {
             ordinal,
             device,
@@ -1742,6 +1825,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
             affine_elu_pipelines,
             copy_pipelines,
             cmp_pipelines,
+            rand_pipelines,
+            global_seed: Arc::new(Mutex::new(0)),
         })
     }
 
@@ -1799,8 +1884,16 @@ impl crate::backend::BackendDevice for VulkanDevice {
         Ok(VulkanStorage::new(buffer, self.clone(), count, dtype))
     }
 
-    fn storage_from_slice<T: crate::WithDType>(&self, _: &[T]) -> Result<Self::Storage> {
-        fail!()
+    fn storage_from_slice<T: crate::WithDType>(&self, s: &[T]) -> Result<Self::Storage> {
+        match T::cpu_storage_ref(s) {
+            CpuStorageRef::U8(storage) => self.allocate_with_data(T::DTYPE, storage),
+            CpuStorageRef::U32(storage) => self.allocate_with_data(T::DTYPE, storage),
+            CpuStorageRef::I64(storage) => self.allocate_with_data(T::DTYPE, storage),
+            CpuStorageRef::BF16(storage) => self.allocate_with_data(T::DTYPE, storage),
+            CpuStorageRef::F16(storage) => self.allocate_with_data(T::DTYPE, storage),
+            CpuStorageRef::F32(storage) => self.allocate_with_data(T::DTYPE, storage),
+            CpuStorageRef::F64(storage) => self.allocate_with_data(T::DTYPE, storage),
+        }
     }
 
     fn storage_from_cpu_storage(&self, storage: &CpuStorage) -> Result<Self::Storage> {
@@ -1819,16 +1912,34 @@ impl crate::backend::BackendDevice for VulkanDevice {
         self.storage_from_cpu_storage(&storage)
     }
 
-    fn rand_uniform(&self, _: &Shape, _: DType, _: f64, _: f64) -> Result<Self::Storage> {
+    fn rand_uniform(
+        &self,
+        shape: &Shape,
+        dtype: DType,
+        low: f64,
+        high: f64,
+    ) -> Result<Self::Storage> {
         fail!()
     }
 
-    fn rand_normal(&self, _: &Shape, _: DType, _: f64, _: f64) -> Result<Self::Storage> {
+    fn rand_normal(
+        &self,
+        shape: &Shape,
+        dtype: DType,
+        mean: f64,
+        std: f64,
+    ) -> Result<Self::Storage> {
         fail!()
     }
 
-    fn set_seed(&self, _: u64) -> Result<()> {
-        fail!()
+    fn set_seed(&self, seed: u64) -> Result<()> {
+        // let mut global_seed = self.global_seed.lock().map_err(VulkanError::PoisonError)?;
+        let mut global_seed = self
+            .global_seed
+            .lock()
+            .map_err(|e| VulkanError::Message(e.to_string()))?;
+        *global_seed = seed;
+        Ok(())
     }
 
     fn synchronize(&self) -> Result<()> {
