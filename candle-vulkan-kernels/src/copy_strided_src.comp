@@ -1,0 +1,69 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+
+// Use a 256-thread 1D workgroup.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Source buffer (read-only).
+layout(set = 0, binding = 0) readonly buffer SrcBuffer {
+    TYPE src_data[];
+};
+// Destination buffer (write-only).
+layout(set = 0, binding = 1) writeonly buffer DstBuffer {
+    TYPE dst_data[];
+};
+
+// Push constants carrying full layout information for the source tensor
+// plus a destination offset.
+// We assume a maximum rank of 4.
+layout(push_constant) uniform PushConstants {
+    uint base;
+    uint rank;
+    uvec4 shape;
+    uvec4 stride;
+    uint dst_offset;
+} pc;
+
+// Compute the physical index in the source from a linear index using full layout.
+uint get_strided_index(uint lin_idx) {
+    uint remaining = lin_idx;
+    uint phys_idx = 0;
+    if (pc.rank > 0u) {
+        uint prod = 1u;
+        if (pc.rank > 1u) { prod = pc.shape.y * pc.shape.z * pc.shape.w; }
+        uint i0 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i0 * pc.stride.x;
+    }
+    if (pc.rank > 1u) {
+        uint prod = 1u;
+        if (pc.rank > 2u) { prod = pc.shape.z * pc.shape.w; }
+        uint i1 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i1 * pc.stride.y;
+    }
+    if (pc.rank > 2u) {
+        uint prod = 1u;
+        if (pc.rank > 3u) { prod = pc.shape.w; }
+        uint i2 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i2 * pc.stride.z;
+    }
+    if (pc.rank > 3u) {
+        uint i3 = remaining;
+        phys_idx += i3 * pc.stride.w;
+    }
+    return pc.base + phys_idx;
+}
+
+void main() {
+    uint lin_idx = gl_GlobalInvocationID.x;
+    // Compute total number of elements.
+    uint total_elements = pc.shape.x * pc.shape.y * pc.shape.z * pc.shape.w;
+    if (lin_idx < total_elements) {
+        uint src_index = get_strided_index(lin_idx);
+        // Write contiguously starting at dst_offset.
+        dst_data[pc.dst_offset + lin_idx] = src_data[src_index];
+    }
+}
