@@ -1,0 +1,175 @@
+#version 450
+
+// --- Reduction Operation Macros ---
+// For OP == 0 (SUM)
+#if OP == 0
+    #define REDUCE(a, b, ai, bi) a += b
+#else
+    // For OP == 1 (MAX/ARGMAX) or OP == 2 (MIN/ARGMIN)
+    #if OP == 1
+        // For argmax: update if new value is greater,
+        // or if equal and new index is greater.
+        #define REDUCE(a, b, ai, bi) if ((a) < (b)) { a = b; ai = bi; }
+    #elif OP == 2
+        // For argmin: update if new value is smaller,
+        // or if equal and new index is greater.
+        #define REDUCE(a, b, ai, bi) if ((a) > (b)) { a = b; ai = bi; }
+    #endif
+#endif
+
+// Use a workgroup size of 256.
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Binding 0: Input tensor buffer.
+layout(std430, binding = 0) readonly buffer InputBuffer {
+    TYPE data[];
+};
+
+// Binding 1: Partial candidate values.
+layout(std430, binding = 1) writeonly buffer PartialValueBuffer {
+    TYPE partialValues[];
+};
+
+// Binding 2: Partial candidate indices.
+layout(std430, binding = 2) writeonly buffer PartialIndexBuffer {
+    uint partialIndices[];
+};
+
+// Push constants carrying tensor metadata.
+layout(push_constant) uniform ReducePushConstants {
+    uint base;
+    uint rank;
+    uvec4 shape;
+    uvec4 stride;
+    uvec4 reduce_axes;
+} pc;
+
+// Shared memory arrays for the intra-workgroup reduction.
+shared TYPE sdata[256];
+shared uint sindex[256];
+shared bool svalid[256];
+
+// Compute the physical offset for a flattened reduction index.
+uint compute_reduction_offset(uint flat_index) {
+    uint offset = 0u;
+    uint remainder = flat_index;
+    for (uint i = 0u; i < 4u; i++) {
+        uint red = pc.reduce_axes[i];
+        if (red == 0xFFFFFFFFu) break;
+        uint dim_size = pc.shape[red];
+        uint idx = remainder % dim_size;
+        remainder = remainder / dim_size;
+        offset += idx * pc.stride[red];
+    }
+    return offset;
+}
+
+// Compute the base index for non-reduced dimensions from a logical batch index.
+uint get_base_index(uint logical_idx) {
+    uint out_shape[4];
+    uint out_stride[4];
+    uint out_rank = 0;
+    for (uint d = 0u; d < pc.rank; d++) {
+        bool is_reduced = (pc.reduce_axes.x == d ||
+                           pc.reduce_axes.y == d ||
+                           pc.reduce_axes.z == d ||
+                           pc.reduce_axes.w == d);
+        if (!is_reduced) {
+            out_shape[out_rank] = pc.shape[d];
+            out_stride[out_rank] = pc.stride[d];
+            out_rank++;
+        }
+    }
+    uint remaining = logical_idx;
+    uint phys_idx = 0u;
+    for (uint i = 0u; i < out_rank; i++) {
+        uint prod = 1u;
+        for (uint j = i + 1u; j < out_rank; j++) {
+            prod *= out_shape[j];
+        }
+        uint coordinate = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += coordinate * out_stride[i];
+    }
+    return pc.base + phys_idx;
+}
+
+void main() {
+    uint local_id = gl_LocalInvocationID.x;
+    uint wg_size = gl_WorkGroupSize.x; // 256
+
+    // Compute the flattened reduction size (product over all reduction axes).
+    uint flatReductionSize = 1u;
+    for (uint i = 0u; i < 4u; i++) {
+        uint red = pc.reduce_axes[i];
+        if (red == 0xFFFFFFFFu) break;
+        flatReductionSize *= pc.shape[red];
+    }
+
+    // Divide the flattened reduction space into segments.
+    uint segments_per_batch = (flatReductionSize + wg_size - 1u) / wg_size;
+    uint global_wgid = gl_WorkGroupID.x;
+    uint batch_id   = global_wgid / segments_per_batch;
+    uint segment_id = global_wgid % segments_per_batch;
+
+    // Compute the base index for this batch.
+    uint base_idx = get_base_index(batch_id);
+
+    // Determine segment start and segment length.
+    uint seg_start = segment_id * wg_size;
+    uint seg_length = flatReductionSize - seg_start;
+    if (seg_length > wg_size) seg_length = wg_size;
+
+    bool hasValue = false;
+    TYPE candidate_val = 0;
+    uint candidate_idx = 0u;
+
+    // Each thread processes a strided subset of the segment.
+    for (uint i = local_id; i < seg_length; i += wg_size) {
+        uint flat_idx = seg_start + i;
+        uint red_offset = compute_reduction_offset(flat_idx);
+        uint src_index = base_idx + red_offset;
+        TYPE val = data[src_index];
+        if (!hasValue) {
+            candidate_val = val;
+            candidate_idx = flat_idx;
+            hasValue = true;
+        } else {
+            REDUCE(candidate_val, val, candidate_idx, flat_idx);
+        }
+    }
+
+    sdata[local_id] = candidate_val;
+    sindex[local_id] = candidate_idx;
+    svalid[local_id] = hasValue;
+    barrier();
+
+    // Use the actual number of loaded elements (seg_length) for reduction.
+    uint laneCount = seg_length;
+    while (laneCount > 1u) {
+        uint newCount = (laneCount + 1u) >> 1u;
+        if (local_id < newCount) {
+            uint partner = local_id + newCount;
+            if (partner < laneCount) {
+                bool validA = svalid[local_id];
+                bool validB = svalid[partner];
+                if (!validA && validB) {
+                    sdata[local_id] = sdata[partner];
+                    sindex[local_id] = sindex[partner];
+                    svalid[local_id] = true;
+                } else if (validA && validB) {
+                    REDUCE(sdata[local_id], sdata[partner],
+                           sindex[local_id], sindex[partner]);
+                }
+            }
+        }
+        barrier();
+        laneCount = newCount;
+    }
+
+    // Write the partial result for this workgroup.
+    if (local_id == 0u) {
+        partialValues[global_wgid] = sdata[0];
+        partialIndices[global_wgid] = sindex[0];
+    }
+}

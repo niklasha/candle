@@ -1,5 +1,5 @@
 use super::{GgmlDType, QStorage};
-use crate::{DType, Result, Shape, VulkanDevice, VulkanStorage};
+use crate::{Result, Shape, VulkanDevice, VulkanStorage};
 
 pub struct QVulkanStorage {
     dtype: GgmlDType,
