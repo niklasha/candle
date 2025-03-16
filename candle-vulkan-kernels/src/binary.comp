@@ -1,0 +1,136 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_AMD_gpu_shader_half_float: enable
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Buffer bindings
+layout(set = 0, binding = 0) buffer LhsBuffer {
+    TYPE lhs_data[];
+};
+layout(set = 0, binding = 1) buffer RhsBuffer {
+    TYPE rhs_data[];
+};
+layout(set = 0, binding = 2) buffer OutputBuffer {
+    TYPE output_data[];
+};
+layout(push_constant) uniform PushConstants {
+    uint a_base;
+    uint a_rank;         // number of dimensions
+    uvec4 a_shape;       // padded shape (unused dimensions set to 1)
+    uvec4 a_stride;      // padded stride (unused dimensions set to 1)
+    uint b_base;
+    uint b_rank;         // number of dimensions
+    uvec4 b_shape;       // padded shape (unused dimensions set to 1)
+    uvec4 b_stride;      // padded stride (unused dimensions set to 1)
+} pc;
+
+// This function converts a linear index to a physical index using the full
+// multi-dimensional layout. We assume row-major ordering.
+uint get_strided_index_a(uint lin_idx) {
+    uint remaining = lin_idx;
+    uint phys_idx = 0;
+    if (pc.a_rank > 0u) {
+        uint prod = 1u;
+        if (pc.a_rank > 1u) { prod = pc.a_shape.y * pc.a_shape.z * pc.a_shape.w; }
+        uint i0 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i0 * pc.a_stride.x;
+    }
+    if (pc.a_rank > 1u) {
+        uint prod = 1u;
+        if (pc.a_rank > 2u) { prod = pc.a_shape.z * pc.a_shape.w; }
+        uint i1 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i1 * pc.a_stride.y;
+    }
+    if (pc.a_rank > 2u) {
+        uint prod = 1u;
+        if (pc.a_rank > 3u) { prod = pc.a_shape.w; }
+        uint i2 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i2 * pc.a_stride.z;
+    }
+    if (pc.a_rank > 3u) {
+        uint i3 = remaining;
+        phys_idx += i3 * pc.a_stride.w;
+    }
+    return pc.a_base + phys_idx;
+}
+
+uint get_strided_index_b(uint lin_idx) {
+    uint remaining = lin_idx;
+    uint phys_idx = 0;
+    if (pc.b_rank > 0u) {
+        uint prod = 1u;
+        if (pc.b_rank > 1u) { prod = pc.b_shape.y * pc.b_shape.z * pc.b_shape.w; }
+        uint i0 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i0 * pc.b_stride.x;
+    }
+    if (pc.b_rank > 1u) {
+        uint prod = 1u;
+        if (pc.b_rank > 2u) { prod = pc.b_shape.z * pc.b_shape.w; }
+        uint i1 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i1 * pc.b_stride.y;
+    }
+    if (pc.b_rank > 2u) {
+        uint prod = 1u;
+        if (pc.b_rank > 3u) { prod = pc.b_shape.w; }
+        uint i2 = remaining / prod;
+        remaining = remaining % prod;
+        phys_idx += i2 * pc.b_stride.z;
+    }
+    if (pc.b_rank > 3u) {
+        uint i3 = remaining;
+        phys_idx += i3 * pc.b_stride.w;
+    }
+    return pc.b_base + phys_idx;
+}
+
+void add_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index_a(idx);
+    uint b_idx = get_strided_index_b(idx);
+    output_data[idx] = lhs_data[a_idx] + rhs_data[b_idx];
+}
+
+void sub_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index_a(idx);
+    uint b_idx = get_strided_index_b(idx);
+    output_data[idx] = lhs_data[a_idx] - rhs_data[b_idx];
+}
+
+void div_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index_a(idx);
+    uint b_idx = get_strided_index_b(idx);
+    output_data[idx] = lhs_data[a_idx] / rhs_data[b_idx];
+}
+
+void mul_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index_a(idx);
+    uint b_idx = get_strided_index_b(idx);
+    output_data[idx] = lhs_data[a_idx] * rhs_data[b_idx];
+}
+
+void min_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index_a(idx);
+    uint b_idx = get_strided_index_b(idx);
+    output_data[idx] = min(lhs_data[a_idx], rhs_data[b_idx]);
+}
+
+void max_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index_a(idx);
+    uint b_idx = get_strided_index_b(idx);
+    output_data[idx] = max(lhs_data[a_idx], rhs_data[b_idx]);
+}
+
+// Conditional main() selection based on the define.
+void main() { OP(); }

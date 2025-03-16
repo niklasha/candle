@@ -5,11 +5,13 @@ use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
 use std::fmt;
 use std::sync::Arc;
+use vulkano::acceleration_structure::CopyAccelerationStructureToMemoryInfo;
 use vulkano::buffer::{BufferContents, Subbuffer};
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryCommandBufferAbstract,
+    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract,
 };
-use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet, WriteDescriptorSetElements};
+use vulkano::device::DeviceOwned;
 use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint};
 use vulkano::sync::GpuFuture;
 
@@ -24,6 +26,19 @@ impl fmt::Display for CmpOp {
             CmpOp::Ge => "Ge",
         };
         write!(f, "{}", s)
+    }
+}
+
+impl CmpOp {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Ne => "ne",
+            Self::Le => "le",
+            Self::Ge => "ge",
+            Self::Lt => "lt",
+            Self::Gt => "gt",
+        }
     }
 }
 
@@ -685,77 +700,159 @@ impl VulkanStorage {
     fn cmp_op_impl(
         &self,
         rhs: &Self,
+        layout: &Layout,
+        rhs_layout: &Layout,
         dst: &mut Self,
         pipeline: &Arc<ComputePipeline>,
         elem_count: usize,
     ) -> Result<()> {
-        let device = self.device();
-        // Retrieve buffers without moving out of the Arc by cloning the inner value.
-        let lhs_buffer = self
-            .buffer
-            .as_ref()
-            .clone()
-            .ok_or_else(|| VulkanError::Message("Missing lhs buffer".into()))?;
-        let rhs_buffer = rhs
-            .buffer
-            .as_ref()
-            .clone()
-            .ok_or_else(|| VulkanError::Message("Missing rhs buffer".into()))?;
-        let out_buffer = dst
-            .buffer
-            .as_ref()
-            .clone()
-            .ok_or_else(|| VulkanError::Message("Missing output buffer".into()))?;
-
-        // Build descriptor sets for lhs, rhs, and output.
-        let bindings = vec![
-            WriteDescriptorSet::buffer(0, lhs_buffer),
-            WriteDescriptorSet::buffer(1, rhs_buffer),
-            WriteDescriptorSet::buffer(2, out_buffer),
-        ];
-        let pds = vulkano::descriptor_set::DescriptorSet::new(
-            device.descriptor_set_allocator.clone(),
-            pipeline.layout().set_layouts()[0].clone(),
-            bindings,
-            [],
-        )
-        .map_err(VulkanError::ValidatedVulkanError)?;
-
-        // Compute dispatch dimensions (using a 1D workgroup with local size 256).
-        let dispatch_x = ((elem_count as u32) + 255) / 256;
-        let dispatch_dims = [dispatch_x, 1, 1];
-
-        let mut builder = AutoCommandBufferBuilder::primary(
-            device.command_buffer_allocator.clone(),
-            device.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .map_err(VulkanError::ValidatedVulkanError)?;
-        unsafe {
-            builder
-                .bind_pipeline_compute(pipeline.clone())
-                .map_err(VulkanError::ValidationError)?
-                .bind_descriptor_sets(
-                    PipelineBindPoint::Compute,
-                    pipeline.layout().clone(),
-                    0,
-                    pds,
-                )
-                .map_err(VulkanError::ValidationError)?
-                .dispatch(dispatch_dims)
-                .map_err(|e| VulkanError::ValidationError(e.into()))?;
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            a_base: u32,
+            a_rank: u32,
+            _pad0: [u32; 2],
+            a_shape: [u32; 4],
+            a_stride: [u32; 4],
+            b_base: u32,
+            b_rank: u32,
+            _pad1: [u32; 2],
+            b_shape: [u32; 4],
+            b_stride: [u32; 4],
         }
-        let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
-        let future = command_buffer
-            .execute(device.queue.clone())
-            .map_err(VulkanError::CommandBufferExecError)?;
-        future
-            .then_signal_fence_and_flush()
-            .map_err(VulkanError::ValidatedVulkanError)?
-            .wait(None)
-            .map_err(VulkanError::ValidatedVulkanError)?;
+
+        let lhs_dtype = self.dtype();
+
+        if let (Some(lhs_buffer), Some(rhs_buffer), Some(dst_buffer)) = (
+            (*self.buffer).clone(),
+            (*rhs.buffer).clone(),
+            (*dst.buffer).clone(),
+        ) {
+            let elem_count = layout.shape().elem_count();
+            let device = self.device();
+            let new_storage = unsafe { device.alloc_uninit(layout.shape(), lhs_dtype)? };
+
+            let a_shape_slice = layout.shape();
+            let a_stride_slice = layout.stride();
+            let mut a_shape_arr = [1u32; 4];
+            let mut a_stride_arr = [1u32; 4];
+            for i in 0..a_shape_slice.rank().min(4) {
+                a_shape_arr[i] = (a_shape_slice.dim(i).unwrap())
+                    .try_into()
+                    .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
+            }
+            for i in 0..a_stride_slice.len().min(4) {
+                a_stride_arr[i] = (*a_stride_slice.get(i).unwrap()) as u32;
+            }
+            let a_rank = a_shape_slice.rank() as u32;
+            let a_base = layout.start_offset() as u32;
+            let b_shape_slice = rhs_layout.shape();
+            let b_stride_slice = rhs_layout.stride();
+            let mut b_shape_arr = [1u32; 4];
+            let mut b_stride_arr = [1u32; 4];
+            for i in 0..b_shape_slice.rank().min(4) {
+                b_shape_arr[i] = (b_shape_slice.dim(i).unwrap())
+                    .try_into()
+                    .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
+            }
+            for i in 0..b_stride_slice.len().min(4) {
+                b_stride_arr[i] = (*b_stride_slice.get(i).unwrap()) as u32;
+            }
+            let b_rank = b_shape_slice.rank() as u32;
+            let b_base = rhs_layout.start_offset() as u32;
+
+            let push_constants = PushConstants {
+                a_base,
+                a_rank,
+                _pad0: [0; 2],
+                a_shape: a_shape_arr,
+                a_stride: a_stride_arr,
+                b_base,
+                b_rank,
+                _pad1: [0; 2],
+                b_shape: b_shape_arr,
+                b_stride: b_stride_arr,
+            };
+            self.execute_compute_kernel(
+                pipeline,
+                vec![lhs_buffer, rhs_buffer],
+                vec![dst_buffer],
+                elem_count,
+                push_constants,
+                false,
+            )?;
+        }
         Ok(())
     }
+
+    pub fn random_impl(
+        &self,
+        shape: &Shape,
+        pipeline: &Arc<ComputePipeline>,
+        target_dtype: DType,
+        seed: u64,
+        arg0: f64, // low / mean
+        arg1: f64, // high / stddev
+    ) -> Result<Self> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            seed: u64,
+            arg0: f32,
+            arg1: f32,
+        }
+
+        if let Some(buffer) = (*self.buffer).clone() {
+            let elem_count = shape.elem_count();
+            let device = self.device();
+            let new_storage = unsafe { device.alloc_uninit(shape, target_dtype)? };
+
+            let arg0 = arg0 as f32;
+            let arg1 = arg1 as f32;
+
+            let push_constants = PushConstants {
+                seed,
+                arg0,
+                arg1,
+            };
+            self.execute_compute_kernel(
+                pipeline,
+                vec![],
+                vec![(*new_storage.buffer).clone().unwrap()],
+                elem_count,
+                push_constants,
+                false,
+            )?;
+            self.device.set_seed(pcg32_advance(seed, elem_count as u64))?;
+
+            Ok(new_storage)
+        } else {
+            // Zero-sized buffer, return zero-sized buffer
+            Ok(self.clone())
+        }
+    }
+}
+
+// PCG32 constants for 64-bit state
+const PCG_MULTIPLIER: u64 = 6364136223846793005u64;
+const PCG_INCREMENT: u64  = 1442695040888963407u64;
+
+fn pcg32_advance(state: u64, delta: u64) -> u64 {
+    let mut acc_mult = 1u64;
+    let mut acc_plus = 0u64;
+    let mut cur_mult = PCG_MULTIPLIER;
+    let mut cur_plus = PCG_INCREMENT;
+    let mut delta = delta;
+    while delta > 0 {
+        if (delta & 1) != 0 {
+            acc_mult = acc_mult.wrapping_mul(cur_mult);
+            acc_plus = acc_plus.wrapping_mul(cur_mult).wrapping_add(cur_plus);
+        }
+        cur_plus = (cur_mult.wrapping_add(1)).wrapping_mul(cur_plus);
+        cur_mult = cur_mult.wrapping_mul(cur_mult);
+        delta >>= 1;
+    }
+    acc_mult.wrapping_mul(state).wrapping_add(acc_plus)
 }
 
 macro_rules! fail {
@@ -793,15 +890,16 @@ impl crate::backend::BackendStorage for VulkanStorage {
     }
 
     fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
-        if self.dtype != DType::F32 {
-            fail!()
-        }
+        let suffix = match self.dtype {
+            DType::F32 => "f32",
+            _ => todo!("Unsupported dtype {:?}", self.dtype),
+        };
         let pipeline = self
             .device
-            .affine_elu_pipelines
-            .get("affine")
-            .ok_or_else(|| VulkanError::Message("No affine pipeline".to_string()))?;
-        self.affine_elu_op_impl(layout, pipeline, mul, add, 0.0)
+            .kernels()
+            .load_pipeline(self.device.device(), &format!("affine_{}", suffix))
+            .map_err(VulkanError::from)?;
+        self.affine_elu_op_impl(layout, &pipeline, mul, add, 0.0)
     }
 
     fn powf(&self, _: &Layout, _: f64) -> Result<Self> {
@@ -809,72 +907,70 @@ impl crate::backend::BackendStorage for VulkanStorage {
     }
 
     fn elu(&self, layout: &Layout, alpha: f64) -> Result<Self> {
-        if self.dtype != DType::F32 {
-            fail!()
-        }
+        let suffix = match self.dtype {
+            DType::F32 => "f32",
+            _ => todo!("Unsupported dtype {:?}", self.dtype),
+        };
         let pipeline = self
             .device
-            .affine_elu_pipelines
-            .get("elu")
-            .ok_or_else(|| VulkanError::Message("No elu pipeline".to_string()))?;
-        self.affine_elu_op_impl(layout, pipeline, 0.0, 0.0, alpha)
+            .kernels()
+            .load_pipeline(self.device.device(), &format!("elu_{}", suffix))
+            .map_err(VulkanError::from)?;
+        self.affine_elu_op_impl(layout, &pipeline, 0.0, 0.0, alpha)
     }
 
     fn reduce_op(&self, op: ReduceOp, layout: &Layout, s: &[usize]) -> Result<Self> {
         let suffix = match self.dtype {
-            DType::F32 => "",
-            DType::U32 => "_u32",
+            DType::F32 => "f32",
+            DType::U32 => "u32",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         match op {
             ReduceOp::Max | ReduceOp::Min | ReduceOp::Sum => {
-                if let Some(partial_pipeline) = self
+                let partial_key = format!("{}_partial_{}", op.name(), suffix);
+                let partial_pipeline = self
                     .device
-                    .reduce_partial_pipelines
-                    .get(format!("{}{}", op.name(), suffix).as_str())
-                {
-                    if let Some(combine_pipeline) = self
-                        .device
-                        .reduce_combine_pipelines
-                        .get(format!("{}{}", op.name(), suffix).as_str())
-                    {
-                        self.reduce_op_impl(layout, s, partial_pipeline, combine_pipeline, false)
-                    } else {
-                        fail!()
-                    }
-                } else {
-                    fail!()
-                }
+                    .kernels()
+                    .load_pipeline(self.device.device(), &partial_key)
+                    .map_err(VulkanError::from)?;
+                let combine_key = format!("{}_combine_{}", op.name(), suffix);
+                let combine_pipeline = self
+                    .device
+                    .kernels()
+                    .load_pipeline(self.device.device(), &combine_key)
+                    .map_err(VulkanError::from)?;
+                self.reduce_op_impl(layout, s, &partial_pipeline, &combine_pipeline, false)
             }
             ReduceOp::ArgMax | ReduceOp::ArgMin => {
-                if let Some(partial_pipeline) = self
+                let partial_key = format!("{}_partial_{}", op.name(), suffix);
+                let partial_pipeline = self
                     .device
-                    .reduce_partial_pipelines
-                    .get(format!("{}{}", op.name(), suffix).as_str())
-                {
-                    if let Some(combine_pipeline) = self
-                        .device
-                        .reduce_combine_pipelines
-                        .get(format!("{}{}", op.name(), suffix).as_str())
-                    {
-                        self.reduce_op_impl(layout, s, partial_pipeline, combine_pipeline, true)
-                    } else {
-                        fail!()
-                    }
-                } else {
-                    fail!()
-                }
+                    .kernels()
+                    .load_pipeline(self.device.device(), &partial_key)
+                    .map_err(VulkanError::from)?;
+                let combine_key = format!("{}_combine_{}", op.name(), suffix);
+                let combine_pipeline = self
+                    .device
+                    .kernels()
+                    .load_pipeline(self.device.device(), &combine_key)
+                    .map_err(VulkanError::from)?;
+                self.reduce_op_impl(layout, s, &partial_pipeline, &combine_pipeline, true)
             }
-            _ => todo!("Unsupported op {:?}", op),
         }
     }
 
     fn cmp(&self, cmp_op: CmpOp, rhs: &Self, layout: &Layout, rhs_layout: &Layout) -> Result<Self> {
         let suffix = match (self.dtype, rhs.dtype) {
-            (DType::F32, DType::F32) => "",
-            (DType::I64, DType::I64) => "_64",
+            (DType::F32, DType::F32) => "f32",
+            (DType::I64, DType::I64) => "i64",
             _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, rhs.dtype),
         };
+        let key = format!("{}_{}", cmp_op.name(), suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
 
         // Allocate new storage for the result.
         // We choose U32 to store 1 for true and 0 for false.
@@ -882,58 +978,52 @@ impl crate::backend::BackendStorage for VulkanStorage {
         let device = self.device();
         let new_storage = unsafe { device.alloc_uninit(layout.shape(), DType::U8)? };
 
-        // Look up the appropriate comparison pipeline using cmp_op.name().
-        let pipeline = device
-            .cmp_pipelines
-            .get(cmp_op.to_string().as_str())
-            .ok_or_else(|| {
-                VulkanError::Message(format!("Missing cmp pipeline for op {}", cmp_op))
-            })?;
-
         // Call the lower-level helper.
-        self.cmp_op_impl(rhs, &mut new_storage.clone(), pipeline, elem_count)?;
+        self.cmp_op_impl(
+            rhs,
+            layout,
+            rhs_layout,
+            &mut new_storage.clone(),
+            &pipeline,
+            elem_count,
+        )?;
         Ok(new_storage)
     }
 
     fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
-        match (self.dtype, dtype) {
-            (a, b) if a == b => Ok(self.clone()),
-            (DType::F32, DType::F16) => {
-                self.unary_op_impl(layout, &self.device.cast_pipelines[0], dtype)
-            }
-            (DType::F16, DType::F32) => {
-                self.unary_op_impl(layout, &self.device.cast_pipelines[1], dtype)
-            }
-            (DType::U32, DType::F32) => {
-                self.unary_op_impl(layout, &self.device.cast_pipelines[2], dtype)
-            }
-            (DType::U32, DType::U8) => {
-                self.unary_op_impl(layout, &self.device.cast_pipelines[3], dtype)
-            }
-            (DType::U8, DType::F32) => {
-                self.unary_op_impl(layout, &self.device.cast_pipelines[4], dtype)
-            }
-            _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, dtype),
+        if self.dtype == dtype {
+            Ok(self.clone())
+        } else {
+            let kernel = match (self.dtype, dtype) {
+                (DType::F32, DType::F16) => "cast_f32_f16",
+                (DType::F16, DType::F32) => "cast_f16_f32",
+                (DType::U32, DType::F32) => "cast_u32_f32",
+                (DType::U32, DType::U8) => "cast_u32_u8",
+                (DType::U8, DType::F32) => "cast_u8_f32",
+                _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, dtype),
+            };
+            let pipeline = self
+                .device
+                .kernels()
+                .load_pipeline(self.device.device(), kernel)
+                .map_err(VulkanError::from)?;
+            self.unary_op_impl(layout, &pipeline, dtype)
         }
     }
 
     fn unary_impl<B: UnaryOpT>(&self, layout: &Layout) -> Result<Self> {
-        if self.dtype == DType::F32 {
-            if let Some(pipeline) = self.device.unary_pipelines.get(B::NAME) {
-                self.unary_op_impl(layout, pipeline, self.dtype())
-            } else {
-                fail!()
-            }
-        } else if self.dtype == DType::F16 {
-            let key = format!("{}_f16", B::NAME);
-            if let Some(pipeline) = self.device.unary_pipelines.get(key.as_str()) {
-                self.unary_op_impl(layout, pipeline, self.dtype())
-            } else {
-                fail!()
-            }
-        } else {
-            fail!()
-        }
+        let suffix = match self.dtype {
+            DType::F32 => "f32",
+            DType::F16 => "f16",
+            _ => todo!("Unsupported dtype {:?}", self.dtype),
+        };
+        let key = format!("{}_{}", B::NAME, suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
+        self.unary_op_impl(layout, &pipeline, self.dtype())
     }
 
     fn binary_impl<B: BinaryOpT>(
@@ -942,22 +1032,18 @@ impl crate::backend::BackendStorage for VulkanStorage {
         layout: &Layout,
         rhs_layout: &Layout,
     ) -> Result<Self> {
-        match (self.dtype(), rhs.dtype()) {
-            (DType::F32, DType::F32) => {
-                if let Some(pipeline) = self.device.binary_pipelines.get(B::NAME) {
-                    self.binary_op_impl(layout, rhs, rhs_layout, pipeline)
-                } else {
-                    todo!("Unsupported binary op {}", B::NAME);
-                }
-            }
-            _ => {
-                todo!(
-                    "Unsupported dtype combo {:?} {:?}",
-                    self.dtype(),
-                    rhs.dtype()
-                );
-            }
-        }
+        let suffix = match (self.dtype, rhs.dtype) {
+            (DType::F32, DType::F32) => "f32",
+            (DType::I64, DType::I64) => "i64",
+            _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, rhs.dtype),
+        };
+        let key = format!("{}_{}", B::NAME, suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
+        self.binary_op_impl(layout, rhs, rhs_layout, &pipeline)
     }
 
     fn where_cond(&self, _: &Layout, _: &Self, _: &Layout, _: &Self, _: &Layout) -> Result<Self> {
@@ -1064,11 +1150,17 @@ impl crate::backend::BackendStorage for VulkanStorage {
 
     fn copy_strided_src(&self, dst: &mut Self, dst_offset: usize, layout: &Layout) -> Result<()> {
         let suffix = match self.dtype {
-            DType::F32 => "",
-            DType::U32 => "_32",
-            DType::I64 => "_64",
+            DType::F32 => "f32",
+            DType::U32 => "u32",
+            DType::I64 => "i64",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
+        let key = format!("copy_strided_src_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1108,12 +1200,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
         let total_elements = shape_arr.iter().product::<u32>();
 
         let dispatch_x = (total_elements + 255) / 256;
-        let pipeline = self
-            .device
-            .copy_pipelines
-            .get(format!("copy_strided_src{}", suffix).as_str())
-            .ok_or_else(|| VulkanError::Message("Missing copy_strided_src pipeline".into()))?;
-        self.copy_op_impl(dst, push_constants, [dispatch_x, 1, 1], pipeline)
+        self.copy_op_impl(dst, push_constants, [dispatch_x, 1, 1], &pipeline)
     }
 
     fn copy2d(
@@ -1127,10 +1214,16 @@ impl crate::backend::BackendStorage for VulkanStorage {
         dst_offset: usize,
     ) -> Result<()> {
         let suffix = match self.dtype {
-            DType::F32 => "",
-            DType::I64 => "_64",
+            DType::F32 => "f32",
+            DType::I64 => "i64",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
+        let key = format!("copy2d_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1156,12 +1249,6 @@ impl crate::backend::BackendStorage for VulkanStorage {
         let group_size_y = 16;
         let dispatch_x = ((d2 as u32) + group_size_x - 1) / group_size_x;
         let dispatch_y = ((d1 as u32) + group_size_y - 1) / group_size_y;
-        // Look up the copy2d pipeline from the device’s copy_shaders map.
-        let pipeline = self
-            .device
-            .copy_pipelines
-            .get(format!("copy2d{}", suffix).as_str())
-            .ok_or_else(|| VulkanError::Message("Missing copy2d pipeline".into()))?;
-        self.copy_op_impl(dst, push_constants, [dispatch_x, dispatch_y, 1], pipeline)
+        self.copy_op_impl(dst, push_constants, [dispatch_x, dispatch_y, 1], &pipeline)
     }
 }

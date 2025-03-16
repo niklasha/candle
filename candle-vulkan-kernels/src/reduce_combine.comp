@@ -1,0 +1,100 @@
+#version 450
+
+#if OP == 0
+    #define REDUCE(a, b, ai, bi) a += b
+#else
+    #if OP == 1
+        #define REDUCE(a, b, ai, bi) if ((a) < (b)) { a = b; ai = bi; }
+    #elif OP == 2
+        #define REDUCE(a, b, ai, bi) if ((a) > (b)) { a = b; ai = bi; }
+    #endif
+#endif
+
+// Use a workgroup size of 256.
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Binding 0: Partial candidate values.
+layout(std430, binding = 0) readonly buffer PartialValueBuffer {
+    TYPE partialValues[];
+};
+
+// Binding 1: Partial candidate indices.
+layout(std430, binding = 1) readonly buffer PartialIndexBuffer {
+    uint partialIndices[];
+};
+
+// Binding 2: Final candidate values (output).
+layout(std430, binding = 2) writeonly buffer FinalValueBuffer {
+    TYPE finalValues[];
+};
+
+// Binding 3: Final candidate indices (output).
+layout(std430, binding = 3) writeonly buffer FinalIndexBuffer {
+    uint finalIndices[];
+};
+
+// Push constant: number of partials per batch.
+layout(push_constant) uniform CombinePushConstants {
+    uint num_partials;
+} pc;
+
+// Shared memory arrays for reduction.
+shared TYPE sdata[256];
+shared uint sindex[256];
+shared bool svalid[256];
+
+void main() {
+    uint local_id = gl_LocalInvocationID.x;
+    // Each workgroup reduces the partial results for one batch.
+    uint batch_id = gl_WorkGroupID.x;
+    uint base_idx = batch_id * pc.num_partials;
+
+    bool hasValue = false;
+    TYPE candidate_val = 0;
+    uint candidate_idx = 0u;
+
+    // Each thread loads a subset of the partials.
+    for (uint i = local_id; i < pc.num_partials; i += gl_WorkGroupSize.x) {
+        uint idx = base_idx + i;
+        TYPE val = partialValues[idx];
+        uint ind = partialIndices[idx];
+        if (!hasValue) {
+            candidate_val = val;
+            candidate_idx = ind;
+            hasValue = true;
+        } else {
+            REDUCE(candidate_val, val, candidate_idx, ind);
+        }
+    }
+    sdata[local_id] = candidate_val;
+    sindex[local_id] = candidate_idx;
+    svalid[local_id] = hasValue;
+    barrier();
+
+    uint laneCount = pc.num_partials;
+    while (laneCount > 1u) {
+        uint newCount = (laneCount + 1u) >> 1u;
+        if (local_id < newCount) {
+            uint partner = local_id + newCount;
+            if (partner < laneCount) {
+                bool validA = svalid[local_id];
+                bool validB = svalid[partner];
+                if (!validA && validB) {
+                    sdata[local_id] = sdata[partner];
+                    sindex[local_id] = sindex[partner];
+                    svalid[local_id] = true;
+                } else if (validA && validB) {
+                    REDUCE(sdata[local_id], sdata[partner],
+                           sindex[local_id], sindex[partner]);
+                }
+            }
+        }
+        barrier();
+        laneCount = newCount;
+    }
+
+    if (local_id == 0u) {
+        finalValues[batch_id] = sdata[0];
+        finalIndices[batch_id] = sindex[0];
+    }
+}

@@ -1,18 +1,10 @@
-// const AFFINE: &str = include_str!("affine.metal");
-// const BINARY: &str = include_str!("binary.metal");
-// const CAST: &str = include_str!("cast.metal");
-// const CONV: &str = include_str!("conv.metal");
-// const FILL: &str = include_str!("fill.metal");
-// const INDEXING: &str = include_str!("indexing.metal");
-// const MLX_GEMM: &str = include_str!("mlx_gemm.metal");
-// const MLX_SORT: &str = include_str!("mlx_sort.metal");
-// const QUANTIZED: &str = include_str!("quantized.metal");
-// const RANDOM: &str = include_str!("random.metal");
-// const REDUCE: &str = include_str!("reduce.metal");
-// const SORT: &str = include_str!("sort.metal");
-// const TERNARY: &str = include_str!("ternary.metal");
-// const UNARY: &str = include_str!("unary.metal");
-// const SDPA: &str = include_str!("scaled_dot_product_attention.metal");
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use vulkano::device::Device;
+use vulkano::pipeline::{ComputePipeline, PipelineLayout, PipelineShaderStageCreateInfo};
+use vulkano::pipeline::compute::ComputePipelineCreateInfo;
+use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
+use vulkano::shader::ShaderModule;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DType {
@@ -39,21 +31,19 @@ impl DType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Source {
-    Affine,
-    Binary,
-    Cast,
-    Conv,
-    Fill,
-    Gemm,
-    Indexing,
-    MlxSort,
-    Quantized,
-    Random,
-    Reduce,
-    Sort,
-    Ternary,
-    Unary,
-    Sdpa,
+    // Affine,
+    // Binary,
+    // Conv,
+    // Fill,
+    // Gemm,
+    // Indexing,
+    // MlxSort,
+    // Quantized,
+    // Random,
+    // Reduce,
+    // Sort,
+    // Ternary,
+    // Sdpa,
 }
 
 // pub mod copy2d {
@@ -68,7 +58,6 @@ pub enum Source {
 //
 // macro_rules! ops{
 //     ($($name:ident),+) => {
-//
 //         pub mod contiguous {
 //         pub struct Kernel(pub &'static str);
 //         $(
@@ -149,47 +138,50 @@ pub enum Source {
 //         tanh, recip, silu, sign, sigmoid
 //     );
 // }
+//
 // pub mod binary {
 //     ops!(add, sub, mul, div, min, max, eq, ne, le, lt, ge, gt);
 // }
-//
-// #[derive(thiserror::Error, Debug)]
-// pub enum VulkanKernelError {
-//     #[error("Could not lock kernel map: {0}")]
-//     LockError(String),
-//     #[error("Error while loading library: {0}")]
-//     LoadLibraryError(String),
-//     #[error("Error while loading function: {0:?}")]
-//     LoadFunctionError(String),
-//     #[error("Failed to create compute function")]
-//     FailedToCreateComputeFunction,
-//     #[error("Failed to create pipeline")]
-//     FailedToCreatePipeline(String),
-//     #[error("Invalid matmul arguments {lhs_stride:?} {rhs_stride:?} {mnk:?}")]
-//     MatMulNonContiguous {
-//         lhs_stride: Vec<usize>,
-//         rhs_stride: Vec<usize>,
-//         mnk: (usize, usize, usize),
-//     },
-//     #[error("Sdpa {variation} head size was {got}, expectd {expected:?}")]
-//     SdpaHeadSizeMismatch {
-//         variation: &'static str,
-//         got: usize,
-//         expected: Vec<usize>,
-//     },
-//     #[error("Sdpa {variation} got dtype {got:?}")]
-//     SdpaHeadDTypeMismatch {
-//         variation: &'static str,
-//         got: SdpaDType,
-//     },
-// }
-//
-// impl<T> From<std::sync::PoisonError<T>> for MetalKernelError {
-//     fn from(e: std::sync::PoisonError<T>) -> Self {
-//         Self::LockError(e.to_string())
-//     }
-// }
-//
+
+#[derive(thiserror::Error, Debug)]
+pub enum VulkanKernelError {
+    #[error("Could not lock kernel map: {0}")]
+    LockError(String),
+    #[error("Error while loading library: {0}")]
+    LoadLibraryError(String),
+    #[error("Error while loading function: {0:?}")]
+    LoadFunctionError(String),
+    #[error("Failed to create compute function")]
+    FailedToCreateComputeFunction,
+    #[error("Failed to create pipeline")]
+    FailedToCreatePipeline(String),
+    #[error("{0:?}")]
+    ValidatedVulkanError(#[from] vulkano::Validated<vulkano::VulkanError>),
+    // #[error("Invalid matmul arguments {lhs_stride:?} {rhs_stride:?} {mnk:?}")]
+    // MatMulNonContiguous {
+    //     lhs_stride: Vec<usize>,
+    //     rhs_stride: Vec<usize>,
+    //     mnk: (usize, usize, usize),
+    // },
+    // #[error("Sdpa {variation} head size was {got}, expectd {expected:?}")]
+    // SdpaHeadSizeMismatch {
+    //     variation: &'static str,
+    //     got: usize,
+    //     expected: Vec<usize>,
+    // },
+    // #[error("Sdpa {variation} got dtype {got:?}")]
+    // SdpaHeadDTypeMismatch {
+    //     variation: &'static str,
+    //     got: SdpaDType,
+    // },
+}
+
+impl<T> From<std::sync::PoisonError<T>> for VulkanKernelError {
+    fn from(e: std::sync::PoisonError<T>) -> Self {
+        Self::LockError(e.to_string())
+    }
+}
+
 // #[derive(Debug, Clone)]
 // pub enum KernelName {
 //     Ref(&'static str),
@@ -235,132 +227,403 @@ pub enum Source {
 //         Self::Value(value)
 //     }
 // }
-//
-// type Libraries = HashMap<Source, Library>;
-// type Pipelines = HashMap<(KernelName, Option<ConstantValues>), ComputePipelineState>;
-//
-// #[derive(Debug)]
-// pub struct Kernels {
-//     libraries: RwLock<Libraries>,
-//     pipelines: RwLock<Pipelines>,
-// }
-//
-// impl Default for Kernels {
-//     fn default() -> Self {
-//         Self::new()
-//     }
-// }
-//
-// impl Kernels {
-//     pub fn new() -> Self {
-//         let libraries = RwLock::new(Libraries::new());
-//         let pipelines = RwLock::new(Pipelines::new());
-//         Self {
-//             libraries,
-//             pipelines,
-//         }
-//     }
-//
-//     fn get_library_source(&self, source: Source) -> &'static str {
-//         match source {
-//             Source::Affine => AFFINE,
-//             Source::Binary => BINARY,
-//             Source::Cast => CAST,
-//             Source::Conv => CONV,
-//             Source::Fill => FILL,
-//             Source::Gemm => MLX_GEMM,
-//             Source::Indexing => INDEXING,
-//             Source::MlxSort => MLX_SORT,
-//             Source::Quantized => QUANTIZED,
-//             Source::Random => RANDOM,
-//             Source::Reduce => REDUCE,
-//             Source::Sort => SORT,
-//             Source::Ternary => TERNARY,
-//             Source::Unary => UNARY,
-//             Source::Sdpa => SDPA,
-//         }
-//     }
-//
-//     /// Load the give library from its [`source`].
-//     /// If this has been previously loaded it will just fetch it from cache.
-//     pub fn load_library(
-//         &self,
-//         device: &Device,
-//         source: Source,
-//     ) -> Result<Library, MetalKernelError> {
-//         let mut libraries = self.libraries.write()?;
-//         if let Some(lib) = libraries.get(&source) {
-//             Ok(lib.clone())
-//         } else {
-//             let lib = {
-//                 let source_content = self.get_library_source(source);
-//                 device
-//                     .new_library_with_source(source_content, &CompileOptions::new())
-//                     .map_err(|e| MetalKernelError::LoadLibraryError(e.to_string()))?
-//             };
-//             libraries.insert(source, lib.clone());
-//             Ok(lib)
-//         }
-//     }
-//
-//     fn load_function(
-//         &self,
-//         device: &Device,
-//         source: Source,
-//         name: &str,
-//         constants: Option<FunctionConstantValues>,
-//     ) -> Result<Function, MetalKernelError> {
-//         let func = self
-//             .load_library(device, source)?
-//             .get_function(name, constants)
-//             .map_err(|e| MetalKernelError::LoadFunctionError(e.to_string()))?;
-//         Ok(func)
-//     }
-//
-//     /// Load the give pipeline
-//     /// loads the library from source, then gets the function [`name`] from
-//     /// that source
-//     fn load_pipeline_with_constants(
-//         &self,
-//         device: &Device,
-//         source: Source,
-//         name: impl Into<KernelName>,
-//         constants: Option<ConstantValues>,
-//     ) -> Result<ComputePipelineState, MetalKernelError> {
-//         let mut pipelines = self.pipelines.write()?;
-//         let key = (name.into(), constants);
-//         if let Some(pipeline) = pipelines.get(&key) {
-//             Ok(pipeline.clone())
-//         } else {
-//             let (name, constants) = key;
-//             let func = self.load_function(
-//                 device,
-//                 source,
-//                 name.as_ref(),
-//                 constants.as_ref().map(|c| c.function_constant_values()),
-//             )?;
-//             let pipeline = device
-//                 .new_compute_pipeline_state_with_function(&func)
-//                 .map_err(|e| MetalKernelError::FailedToCreatePipeline(e.to_string()))?;
-//             pipelines.insert((name, constants), pipeline.clone());
-//
-//             Ok(pipeline)
-//         }
-//     }
-//
-//     /// Load the give pipeline
-//     /// loads the library from source, then gets the function [`name`] from
-//     /// that source (without constants)
-//     pub fn load_pipeline(
-//         &self,
-//         device: &Device,
-//         source: Source,
-//         name: impl Into<KernelName>,
-//     ) -> Result<ComputePipelineState, MetalKernelError> {
-//         self.load_pipeline_with_constants(device, source, name, None)
-//     }
-// }
-//
+
+#[derive(Debug)]
+pub struct Kernels {
+    kernels: HashMap<String, Arc<ShaderModule>>,
+    pub pipelines: RwLock<HashMap<String, Arc<ComputePipeline>>>,
+}
+
+impl Kernels {
+    pub fn new(device: Arc<Device>) -> Result<Self, VulkanKernelError> {
+        let mut kernels = HashMap::new();
+
+        kernels.insert("cast_f32_f16".to_string(), float_to_half::load(device.clone())?);
+        kernels.insert("cast_f16_f32".to_string(), half_to_float::load(device.clone())?);
+        kernels.insert("cast_u32_f32".to_string(), uint_to_float::load(device.clone())?);
+        kernels.insert("cast_u32_u8".to_string(), uint_to_uint8_t::load(device.clone())?);
+        kernels.insert("cast_u8_f32".to_string(), uint8_t_to_float::load(device.clone())?);
+
+        kernels.insert("neg_f32".to_string(), neg_float::load(device.clone())?);
+        kernels.insert("gelu_f32".to_string(), gelu_float::load(device.clone())?);
+        kernels.insert("gelu_erf_f32".to_string(), gelu_erf_float::load(device.clone())?);
+        kernels.insert("erf_f32".to_string(), erf_float::load(device.clone())?);
+        kernels.insert("silu_f32".to_string(), silu_float::load(device.clone())?);
+        kernels.insert("ceil_f32".to_string(), ceil_float::load(device.clone())?);
+        kernels.insert("floor_f32".to_string(), floor_float::load(device.clone())?);
+        kernels.insert("round_f32".to_string(), round_float::load(device.clone())?);
+        kernels.insert("sign_f32".to_string(), sign_float::load(device.clone())?);
+        kernels.insert("sqr_f32".to_string(), sqr_float::load(device.clone())?);
+        kernels.insert("neg_f16".to_string(), neg_half::load(device.clone())?);
+        kernels.insert("gelu_f16".to_string(), gelu_half::load(device.clone())?);
+        kernels.insert("gelu_erf_f16".to_string(), gelu_erf_half::load(device.clone())?);
+        kernels.insert("erf_f16".to_string(), erf_half::load(device.clone())?);
+        kernels.insert("silu_f16".to_string(), silu_half::load(device.clone())?);
+        kernels.insert("ceil_f16".to_string(), ceil_half::load(device.clone())?);
+        kernels.insert("floor_f16".to_string(), floor_half::load(device.clone())?);
+        kernels.insert("round_f16".to_string(), round_half::load(device.clone())?);
+        kernels.insert("sign_f16".to_string(), sign_half::load(device.clone())?);
+        kernels.insert("sqr_f16".to_string(), sqr_half::load(device.clone())?);
+
+        kernels.insert("add_f32".to_string(), add_float::load(device.clone())?);
+        kernels.insert("sub_f32".to_string(), sub_float::load(device.clone())?);
+        kernels.insert("div_f32".to_string(), div_float::load(device.clone())?);
+        kernels.insert("mul_f32".to_string(), mul_float::load(device.clone())?);
+        kernels.insert("minimum_f32".to_string(), min_float::load(device.clone())?);
+        kernels.insert("maximum_f32".to_string(), max_float::load(device.clone())?);
+
+        kernels.insert("sum_partial_f32".to_string(), sum_partial_float::load(device.clone())?);
+        kernels.insert("argmax_partial_f32".to_string(), argmax_partial_float::load(device.clone())?);
+        kernels.insert("max_partial_f32".to_string(), max_partial_float::load(device.clone())?);
+        kernels.insert("argmin_partial_f32".to_string(), argmin_partial_float::load(device.clone())?);
+        kernels.insert("min_partial_f32".to_string(), min_partial_float::load(device.clone())?);
+        kernels.insert("sum_partial_u32".to_string(), sum_partial_uint::load(device.clone())?);
+        kernels.insert("argmax_partial_u32".to_string(), argmax_partial_uint::load(device.clone())?);
+        kernels.insert("max_partial_u32".to_string(), max_partial_uint::load(device.clone())?);
+        kernels.insert("argmin_partial_u32".to_string(), argmin_partial_uint::load(device.clone())?);
+        kernels.insert("min_partial_u32".to_string(), min_partial_uint::load(device.clone())?);
+        kernels.insert("sum_combine_f32".to_string(), sum_combine_float::load(device.clone())?);
+        kernels.insert("argmax_combine_f32".to_string(), argmax_combine_float::load(device.clone())?);
+        kernels.insert("max_combine_f32".to_string(), max_combine_float::load(device.clone())?);
+        kernels.insert("argmin_combine_f32".to_string(), argmin_combine_float::load(device.clone())?);
+        kernels.insert("min_combine_f32".to_string(), min_combine_float::load(device.clone())?);
+        kernels.insert("sum_combine_u32".to_string(), sum_combine_uint::load(device.clone())?);
+        kernels.insert("argmax_combine_u32".to_string(), argmax_combine_uint::load(device.clone())?);
+        kernels.insert("max_combine_u32".to_string(), max_combine_uint::load(device.clone())?);
+        kernels.insert("argmin_combine_u32".to_string(), argmin_combine_uint::load(device.clone())?);
+        kernels.insert("min_combine_u32".to_string(), min_combine_uint::load(device.clone())?);
+
+        kernels.insert ("affine_f32".to_string(), affine_float::load(device.clone())?);
+        kernels.insert ("elu_f32".to_string(), elu_float::load(device.clone())?);
+
+        kernels.insert ("copy2d_f32".to_string(), copy2d_float::load(device.clone())?);
+        kernels.insert ("copy2d_i64".to_string(), copy2d_int64_t::load(device.clone())?);
+        kernels.insert ("copy_strided_src_f32".to_string(), copy_strided_src_float::load(device.clone())?);
+        kernels.insert ("copy_strided_src_u32".to_string(), copy_strided_src_uint::load(device.clone())?);
+        kernels.insert ("copy_strided_src_i64".to_string(), copy_strided_src_int64_t::load(device.clone())?);
+
+        kernels.insert ("eq_f32".to_string(), eq_float::load(device.clone())?);
+        kernels.insert ("ne_f32".to_string(), ne_float::load(device.clone())?);
+        kernels.insert ("lt_f32".to_string(), lt_float::load(device.clone())?);
+        kernels.insert ("gt_f32".to_string(), gt_float::load(device.clone())?);
+        kernels.insert ("le_f32".to_string(), le_float::load(device.clone())?);
+        kernels.insert ("ge_f32".to_string(), ge_float::load(device.clone())?);
+        kernels.insert ("eq_i64".to_string(), eq_int64_t::load(device.clone())?);
+        kernels.insert ("ne_i64".to_string(), ne_int64_t::load(device.clone())?);
+        kernels.insert ("lt_i64".to_string(), lt_int64_t::load(device.clone())?);
+        kernels.insert ("gt_i64".to_string(), gt_int64_t::load(device.clone())?);
+        kernels.insert ("le_i64".to_string(), le_int64_t::load(device.clone())?);
+        kernels.insert ("ge_i64".to_string(), ge_int64_t::load(device.clone())?);
+
+        kernels.insert("rand_uniform_f32".to_string(), rand_uniform_float::load(device.clone())?);
+        kernels.insert("rand_normal_f32".to_string(), rand_normal_float::load(device.clone())?);
+
+        Ok(Self {
+            kernels,
+            pipelines: RwLock::new(HashMap::new()),
+        })
+    }
+
+    pub fn load_pipeline(
+        &self,
+        device: Arc<Device>,
+        shader: &str,
+    ) -> Result<Arc<ComputePipeline>, VulkanKernelError> {
+        // Use the cached shader module
+        let shader_module = {
+            self.kernels
+                .get(shader)
+                .ok_or_else(|| VulkanKernelError::LoadLibraryError(format!("{} shader not found", shader)))?
+                .clone()
+        };
+
+        // Check if the pipeline is already cached
+        let mut pipelines = self.pipelines.write()?;
+        if let Some(pipeline) = pipelines.get(shader) {
+            return Ok(pipeline.clone());
+        }
+
+        // Create the pipeline using the shader module
+        let stage = PipelineShaderStageCreateInfo::new(
+            shader_module.entry_point("main")
+                .ok_or(VulkanKernelError::FailedToCreatePipeline("No entry point".to_string()))?,
+        );
+
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+                .into_pipeline_layout_create_info(device.clone())
+                .map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?,
+        )
+            .map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?;
+
+        let pipeline = ComputePipeline::new(
+            device.clone(),
+            None,
+            ComputePipelineCreateInfo::stage_layout(stage, layout),
+        )
+            .map_err(|e| VulkanKernelError::FailedToCreatePipeline(e.to_string()))?;
+
+        pipelines.insert(shader.to_string(), pipeline.clone());
+        Ok(pipeline)
+    }
+}
+
+macro_rules! cast_kernels {
+    ($( ($mod:ident, $src:literal, $dst:literal, $need_uint_cast:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                // This macro invocation creates a shader module at compile time.
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/cast.comp",
+                    define: [("SRC_TYPE", $src), ("DST_TYPE", $dst),("NEED_UINT_CAST", $need_uint_cast)]
+                }
+            }
+        )*
+    };
+}
+cast_kernels!(
+    (float_to_half, "float", "float16_t", "0"),
+    (half_to_float, "float16_t", "float", "0"),
+    (uint_to_float, "uint", "float", "0"),
+    (uint_to_uint8_t, "uint", "uint8_t", "0"),
+    (uint8_t_to_float, "uint8_t", "float", "1")
+);
+
+macro_rules! unary_kernels {
+    ($( ($mod:ident, $op:literal, $inner_type:literal, $outer_type:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/unary.comp",
+                    define: [("OP", $op), ("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type)]
+                }
+            }
+        )*
+    };
+}
+
+unary_kernels!(
+    (neg_float, "neg_op", "float", "float"),
+    (gelu_float, "gelu_op", "float", "float"),
+    (gelu_erf_float, "gelu_erf_op", "float", "float"),
+    (erf_float, "erf_op", "float", "float"),
+    (silu_float, "silu_op", "float", "float"),
+    (ceil_float, "ceil_op", "float", "float"),
+    (floor_float, "floor_op", "float", "float"),
+    (round_float, "round_op", "float", "float"),
+    (sign_float, "sign_op", "float", "float"),
+    (sqr_float, "sqr_op", "float", "float"),
+    (neg_half, "neg_op", "float", "float16_t"),
+    (gelu_half, "gelu_op", "float", "float16_t"),
+    (gelu_erf_half, "gelu_erf_op", "float", "float16_t"),
+    (erf_half, "erf_op", "float", "float16_t"),
+    (silu_half, "silu_op", "float", "float16_t"),
+    (ceil_half, "ceil_op", "float", "float16_t"),
+    (floor_half, "floor_op", "float", "float16_t"),
+    (round_half, "round_op", "float", "float16_t"),
+    (sign_half, "sign_op", "float", "float16_t"),
+    (sqr_half, "sqr_op", "float", "float16_t"),
+);
+
+// unary_kernels!(
+//     (neg_double, "neg_op", "double", "double"),
+//     (gelu_double, "gelu_op", "double", "double"),
+//     (gelu_erf_double, "gelu_erf_op", "double", "double"),
+//     (erf_double, "erf_op", "double", "double"),
+//     (silu_double, "silu_op", "double", "double"),
+//     (ceil_double, "ceil_op", "double", "double"),
+//     (floor_double, "floor_op", "double", "double"),
+//     (round_double, "round_op", "double", "double"),
+//     (sign_double, "sign_op", "double", "double"),
+// );
+
+macro_rules! binary_kernels {
+    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/binary.comp",
+                    define: [("OP", $op), ("TYPE", $ty)]
+                }
+            }
+        )*
+    };
+}
+
+binary_kernels!(
+    (add_float, "add_op", "float"),
+    (sub_float, "sub_op", "float"),
+    (div_float, "div_op", "float"),
+    (mul_float, "mul_op", "float"),
+    (min_float, "min_op", "float"),
+    (max_float, "max_op", "float"),
+);
+
+macro_rules! reduce_partial_kernels {
+    ($( ($mod:ident, $op:literal, $ty:literal, $to_index:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/reduce_partial.comp",
+                    define: [("OP", $op), ("TYPE", $ty), ("TO_INDEX", $to_index)]
+                }
+            }
+        )*
+    };
+}
+
+macro_rules! reduce_combine_kernels {
+    ($( ($mod:ident, $op:literal, $ty:literal, $to_index:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/reduce_combine.comp",
+                    define: [("OP", $op), ("TYPE", $ty), ("TO_INDEX", $to_index)]
+                }
+            }
+        )*
+    };
+}
+
+reduce_partial_kernels!(
+    (sum_partial_float, "0", "float", "0"),
+    (argmax_partial_float, "1", "float", "1"),
+    (max_partial_float, "1", "float", "0"),
+    (argmin_partial_float, "2", "float", "1"),
+    (min_partial_float, "2", "float", "0"),
+    (sum_partial_uint, "0", "uint", "0"),
+    (argmax_partial_uint, "1", "uint", "1"),
+    (max_partial_uint, "1", "uint", "0"),
+    (argmin_partial_uint, "2", "uint", "1"),
+    (min_partial_uint, "2", "uint", "0"),
+);
+
+reduce_combine_kernels!(
+    (sum_combine_float, "0", "float", "0"),
+    (argmax_combine_float, "1", "float", "1"),
+    (max_combine_float, "1", "float", "0"),
+    (argmin_combine_float, "2", "float", "1"),
+    (min_combine_float, "2", "float", "0"),
+    (sum_combine_uint, "0", "uint", "0"),
+    (argmax_combine_uint, "1", "uint", "1"),
+    (max_combine_uint, "1", "uint", "0"),
+    (argmin_combine_uint, "2", "uint", "1"),
+    (min_combine_uint, "2", "uint", "0"),
+);
+
+macro_rules! affine_elu_kernels {
+    ($( ($mod:ident, $op:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/affine_elu.comp",
+                    define: [("OP", $op)]
+                }
+            }
+        )*
+    }
+}
+
+affine_elu_kernels!(
+    (affine_float, "affine_op"),
+    (elu_float, "elu_op"),
+);
+
+macro_rules! copy2d_shaders {
+    ($( ($mod:ident, $ty:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/copy2d.comp",
+                    define: [("TYPE", $ty)]
+                }
+            }
+        )*
+    }
+}
+
+copy2d_shaders!(
+    (copy2d_float, "float"),
+    (copy2d_int64_t, "int64_t"),
+);
+
+macro_rules! copy_strided_src_kernels {
+    ($( ($mod:ident, $ty:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/copy_strided_src.comp",
+                    define: [("TYPE", $ty)]
+                }
+            }
+        )*
+    }
+}
+
+
+copy_strided_src_kernels!(
+    (copy_strided_src_float, "float"),
+    (copy_strided_src_uint, "uint"),
+    (copy_strided_src_int64_t, "int64_t"),
+);
+
+macro_rules! cmp_kernels {
+    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/cmp.comp",
+                    define: [("OP", $op), ("TYPE", $ty)]
+                }
+            }
+        )*
+    };
+}
+
+cmp_kernels!(
+    (eq_float, "==", "float"),
+    (ne_float, "!=", "float"),
+    (lt_float, "<", "float"),
+    (gt_float, ">", "float"),
+    (le_float, "<=", "float"),
+    (ge_float, ">=", "float"),
+    (eq_int64_t, "==", "int64_t"),
+    (ne_int64_t, "!=", "int64_t"),
+    (lt_int64_t, "<", "int64_t"),
+    (gt_int64_t, ">", "int64_t"),
+    (le_int64_t, "<=", "int64_t"),
+    (ge_int64_t, ">=", "int64_t"),
+);
+
+macro_rules! rand_kernels {
+    ($( ($mod:ident, $uniform:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/rand.comp",
+                    define: [("UNIFORM", $uniform)]
+                }
+            }
+        )*
+    };
+}
+
+rand_kernels!(
+    (rand_uniform_float, "1"),
+    (rand_normal_float, "0"),
+);
+
 // #[allow(clippy::too_many_arguments)]
 // pub fn call_copy2d(
 //     device: &Device,
