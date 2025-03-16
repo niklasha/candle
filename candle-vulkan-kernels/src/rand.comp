@@ -1,0 +1,79 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+
+// Use a 256-thread 1D workgroup.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer OutputBuffer {
+    float values[];
+};
+
+layout(push_constant) uniform RandPushConstants {
+    uint64_t globalSeed;
+#ifdef UNIFORM
+    float low ;
+    float high;
+#else
+    float mean;
+    float stddev;
+#endif
+} pc;
+
+// PCG32 constants for 64-bit state
+const uint64_t PCG_MULTIPLIER = 6364136223846793005ul;
+const uint64_t PCG_INCREMENT  = 1442695040888963407ul;
+
+// PCG32 output function (PCG-XSH-RR):
+// It updates the state and returns a 32-bit random number.
+uint pcg32_random(inout uint64_t state) {
+    uint64_t oldState = state;
+    state = oldState * PCG_MULTIPLIER + PCG_INCREMENT;
+    uint xorshifted = uint(((oldState >> 18u) ^ oldState) >> 27u);
+    uint rot = uint(oldState >> 59u);
+    return (xorshifted >> rot) | (xorshifted << ((-rot) & 31));
+}
+
+// Jump-ahead function to advance the state by 'delta' steps.
+uint64_t pcg32_advance(uint64_t state, uint64_t delta) {
+    uint64_t acc_mult = 1ul;
+    uint64_t acc_plus = 0ul;
+    uint64_t cur_mult = PCG_MULTIPLIER;
+    uint64_t cur_plus = PCG_INCREMENT;
+    while(delta > 0u) {
+        if ((delta & 1u) != 0u) {
+            acc_mult *= cur_mult;
+            acc_plus = acc_plus * cur_mult + cur_plus;
+        }
+        cur_plus = (cur_mult + 1ul) * cur_plus;
+    cur_mult *= cur_mult;
+    delta >>= 1u;
+    }
+    return acc_mult * state + acc_plus;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    // Each thread computes its own local RNG state by jumping ahead by its global index.
+    uint64_t localState = pcg32_advance(pc.globalSeed, uint64_t(idx));
+
+    // Generate a random 32-bit value and scale the output to [0,1)
+    uint rand_val = pcg32_random(localState);
+    float r = float(rand_val) / 4294967296.0;
+
+    #ifdef UNIFORM
+    values[idx] = pc.low + r * (pc.high - pc.low);
+    #else
+    // For a Gaussian distribution, we need two independent uniform random numbers.
+    uint rand_val2 = pcg32_random(localState);
+    float r2 = float(rand_val2) / 4294967296.0;
+    // Avoid log(0)
+    r = max(r, 1e-6);
+    // Box-Muller transform:
+    const float PI = 3.14159265358979323846;
+    float theta = 2.0 * PI * r2;
+    float gaussian = sqrt(-2.0 * log(r)) * cos(theta);
+    values[idx] = pc.mean + gaussian * pc.stddev;
+    #endif
+}

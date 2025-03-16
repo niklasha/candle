@@ -1,0 +1,39 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+
+// Use a 16x16 workgroup.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Source buffer (read-only).
+layout(set = 0, binding = 0) readonly buffer SrcBuffer {
+    TYPE src_data[];
+};
+// Destination buffer (write-only).
+layout(set = 0, binding = 1) writeonly buffer DstBuffer {
+    TYPE dst_data[];
+};
+
+// Push constants for region parameters.
+// Order:
+//  src_offset, dst_offset,
+//  rows, cols,
+//  src_stride, dst_stride.
+layout(push_constant) uniform Copy2DPushConstants {
+    uint src_offset;
+    uint dst_offset;
+    uint rows;        // d1: number of rows to copy
+    uint cols;        // d2: number of columns to copy
+    uint src_stride;  // source row stride
+    uint dst_stride;  // destination row stride
+} pc;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x; // column index within the region
+    uint y = gl_GlobalInvocationID.y; // row index within the region
+    if (x < pc.cols && y < pc.rows) {
+        uint src_index = pc.src_offset + y * pc.src_stride + x;
+        uint dst_index = pc.dst_offset + y * pc.dst_stride + x;
+        dst_data[dst_index] = src_data[src_index];
+    }
+}

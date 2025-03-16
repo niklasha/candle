@@ -3,8 +3,8 @@
 use crate::backend::BackendStorage;
 use crate::{CpuStorage, CpuStorageRef, DType, Result, Shape, VulkanError, VulkanStorage};
 use bytemuck::Pod;
+use candle_vulkan_kernels::Kernels;
 use half::{bf16, f16};
-use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use vulkano::buffer::allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
@@ -26,9 +26,7 @@ use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{
     AllocationCreateInfo, DeviceLayout, MemoryTypeFilter, StandardMemoryAllocator,
 };
-use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{PipelineLayout, PipelineShaderStageCreateInfo};
+use vulkano::pipeline::compute::ComputePipeline;
 use vulkano::sync::GpuFuture;
 use vulkano::{DeviceSize, VulkanLibrary};
 
@@ -39,962 +37,15 @@ pub struct VulkanDevice {
     pub(crate) queue: Arc<Queue>,
     memory_allocator: Arc<StandardMemoryAllocator>,
     buffer_allocator: Arc<Mutex<SubbufferAllocator>>,
+    pub(crate) kernels: Arc<Kernels>,
     pub(crate) command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     pub(crate) descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    //    zero_init_pipeline: Arc<ComputePipeline>,
-    pub(crate) cast_pipelines: Vec<Arc<ComputePipeline>>,
-    pub(crate) unary_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
-    pub(crate) binary_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
-    pub(crate) reduce_partial_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
-    pub(crate) reduce_combine_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
-    pub(crate) affine_elu_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
-    pub(crate) copy_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
-    pub(crate) cmp_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
-    pub(crate) rand_pipelines: HashMap<&'static str, Arc<ComputePipeline>>,
     pub(crate) global_seed: Arc<Mutex<u64>>,
 }
 
 enum DataSource<'a, T> {
     Slice(&'a [T]),
     Fill { value: T, count: usize },
-}
-
-macro_rules! fail {
-    () => {
-        unimplemented!("vulkan support is incomplete, this function is not yet implemented")
-    };
-}
-
-macro_rules! unary_shaders {
-    ($( ($mod:ident, $op:literal, $inner_type:literal, $outer_type:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-                        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
-                        #extension GL_EXT_shader_16bit_storage : require
-                        #extension GL_AMD_gpu_shader_half_float: enable
-
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-                        // Buffer bindings
-                        layout(set = 0, binding = 0) buffer InputBuffer {
-                            OUTER_TYPE input_data[];
-                        };
-                        layout(set = 0, binding = 1) buffer OutputBuffer {
-                            OUTER_TYPE output_data[];
-                        };
-                        layout(push_constant) uniform PushConstants {
-                            uint base;
-                            uint rank;         // number of dimensions
-                            uvec4 shape;       // padded shape (unused dimensions set to 1)
-                            uvec4 stride;      // padded stride (unused dimensions set to 1)
-                        } pc;
-
-                        const INNER_TYPE HALF = INNER_TYPE(0.5);
-                        const INNER_TYPE ONE = INNER_TYPE(1.0);
-
-                        // This function converts a linear index to a physical index using the full
-                        // multi-dimensional layout. We assume row-major ordering.
-                        uint get_strided_index(uint lin_idx) {
-                            uint remaining = lin_idx;
-                            uint phys_idx = 0;
-                            if (pc.rank > 0u) {
-                                uint prod = 1u;
-                                if (pc.rank > 1u) { prod = pc.shape.y * pc.shape.z * pc.shape.w; }
-                                uint i0 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i0 * pc.stride.x;
-                            }
-                            if (pc.rank > 1u) {
-                                uint prod = 1u;
-                                if (pc.rank > 2u) { prod = pc.shape.z * pc.shape.w; }
-                                uint i1 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i1 * pc.stride.y;
-                            }
-                            if (pc.rank > 2u) {
-                                uint prod = 1u;
-                                if (pc.rank > 3u) { prod = pc.shape.w; }
-                                uint i2 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i2 * pc.stride.z;
-                            }
-                            if (pc.rank > 3u) {
-                                uint i3 = remaining;
-                                phys_idx += i3 * pc.stride.w;
-                            }
-                            return pc.base + phys_idx;
-                        }
-
-                        void neg_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            output_data[idx] = OUTER_TYPE(-INNER_TYPE(input_data[idx]));
-                        }
-
-                        void gelu_op() {
-                            const INNER_TYPE COEF_A = INNER_TYPE(0.79788456) + INNER_TYPE(0.000000000802865355);
-                            const INNER_TYPE COEF_B = INNER_TYPE(0.04471509) + INNER_TYPE(-0.0000000026068047);
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            INNER_TYPE x = INNER_TYPE(input_data[idx]);
-                            INNER_TYPE x_cubed = x * x * x;
-                            INNER_TYPE inner = COEF_A * (x + COEF_B * x_cubed);
-                            INNER_TYPE cdf = HALF * (ONE + tanh(inner));
-                            output_data[idx] = OUTER_TYPE(x * cdf);
-                        }
-
-                        // Custom erf approximation
-                        INNER_TYPE erf_approx(INNER_TYPE x) {
-                            const INNER_TYPE a1 = INNER_TYPE(0.25482959) + INNER_TYPE(0.000000002091);
-                            const INNER_TYPE a2 = INNER_TYPE(-0.28449674) + INNER_TYPE(0.000000003751);
-                            const INNER_TYPE a3 = INNER_TYPE(1.42141378) + INNER_TYPE(-0.000000038331);
-                            const INNER_TYPE a4 = INNER_TYPE(-1.45315206) + INNER_TYPE(0.00000003259);
-                            const INNER_TYPE a5 = INNER_TYPE(1.06140542) + INNER_TYPE(0.000000009758);
-                            const INNER_TYPE p  = INNER_TYPE(0.3275911) + INNER_TYPE(0.000000000330);
-                            INNER_TYPE s = sign(x);
-                            x = abs(x);
-                            INNER_TYPE t = ONE / (ONE + p * x);
-                            INNER_TYPE y = ONE - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * exp(-x * x);
-                            return s * y;
-                        }
-
-                        void gelu_erf_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            INNER_TYPE x = INNER_TYPE(input_data[idx]);
-                            INNER_TYPE cdf = HALF * (ONE + erf_approx(x / sqrt(2.0)));
-                            output_data[idx] = OUTER_TYPE(x * cdf);
-                        }
-
-                        void erf_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            INNER_TYPE x = INNER_TYPE(input_data[idx]);
-                            output_data[idx] = OUTER_TYPE(erf_approx(x));
-                        }
-
-                        void silu_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            INNER_TYPE x = INNER_TYPE(input_data[idx]);
-                            output_data[idx] = OUTER_TYPE(x / (ONE + exp(-x)));
-                        }
-
-                        void ceil_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            output_data[idx] = OUTER_TYPE(ceil(INNER_TYPE(input_data[idx])));
-                        }
-
-                        void floor_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            output_data[idx] = OUTER_TYPE(floor(INNER_TYPE(input_data[idx])));
-                        }
-
-                        float c_round(float x) {
-                            return (x >= 0.0) ? floor(x + 0.5) : ceil(x - 0.5);
-                        }
-
-                        void round_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            output_data[idx] = OUTER_TYPE(c_round(INNER_TYPE(input_data[idx])));
-                        }
-
-                        void sign_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            output_data[idx] = OUTER_TYPE(sign(INNER_TYPE(input_data[idx])));
-                        }
-
-                        void sqr_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index(idx);
-                            INNER_TYPE data = INNER_TYPE(input_data[idx]);
-                            output_data[idx] = OUTER_TYPE(data * data);
-                        }
-
-                        // Conditional main() selection based on the define.
-                        void main() { OP(); }
-                    ",
-                    define: [("OP", $op), ("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type)]
-                }
-            }
-        )*
-    };
-}
-
-macro_rules! binary_shaders {
-    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-                        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
-                        #extension GL_EXT_shader_16bit_storage : require
-                        #extension GL_AMD_gpu_shader_half_float: enable
-
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-                        // Buffer bindings
-                        layout(set = 0, binding = 0) buffer LhsBuffer {
-                            TYPE lhs_data[];
-                        };
-                        layout(set = 0, binding = 1) buffer RhsBuffer {
-                            TYPE rhs_data[];
-                        };
-                        layout(set = 0, binding = 2) buffer OutputBuffer {
-                            TYPE output_data[];
-                        };
-                        layout(push_constant) uniform PushConstants {
-                            uint a_base;
-                            uint a_rank;         // number of dimensions
-                            uvec4 a_shape;       // padded shape (unused dimensions set to 1)
-                            uvec4 a_stride;      // padded stride (unused dimensions set to 1)
-                            uint b_base;
-                            uint b_rank;         // number of dimensions
-                            uvec4 b_shape;       // padded shape (unused dimensions set to 1)
-                            uvec4 b_stride;      // padded stride (unused dimensions set to 1)
-                        } pc;
-
-                        // This function converts a linear index to a physical index using the full
-                        // multi-dimensional layout. We assume row-major ordering.
-                        uint get_strided_index_a(uint lin_idx) {
-                            uint remaining = lin_idx;
-                            uint phys_idx = 0;
-                            if (pc.a_rank > 0u) {
-                                uint prod = 1u;
-                                if (pc.a_rank > 1u) { prod = pc.a_shape.y * pc.a_shape.z * pc.a_shape.w; }
-                                uint i0 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i0 * pc.a_stride.x;
-                            }
-                            if (pc.a_rank > 1u) {
-                                uint prod = 1u;
-                                if (pc.a_rank > 2u) { prod = pc.a_shape.z * pc.a_shape.w; }
-                                uint i1 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i1 * pc.a_stride.y;
-                            }
-                            if (pc.a_rank > 2u) {
-                                uint prod = 1u;
-                                if (pc.a_rank > 3u) { prod = pc.a_shape.w; }
-                                uint i2 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i2 * pc.a_stride.z;
-                            }
-                            if (pc.a_rank > 3u) {
-                                uint i3 = remaining;
-                                phys_idx += i3 * pc.a_stride.w;
-                            }
-                            return pc.a_base + phys_idx;
-                        }
-
-                        uint get_strided_index_b(uint lin_idx) {
-                            uint remaining = lin_idx;
-                            uint phys_idx = 0;
-                            if (pc.b_rank > 0u) {
-                                uint prod = 1u;
-                                if (pc.b_rank > 1u) { prod = pc.b_shape.y * pc.b_shape.z * pc.b_shape.w; }
-                                uint i0 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i0 * pc.b_stride.x;
-                            }
-                            if (pc.b_rank > 1u) {
-                                uint prod = 1u;
-                                if (pc.b_rank > 2u) { prod = pc.b_shape.z * pc.b_shape.w; }
-                                uint i1 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i1 * pc.b_stride.y;
-                            }
-                            if (pc.b_rank > 2u) {
-                                uint prod = 1u;
-                                if (pc.b_rank > 3u) { prod = pc.b_shape.w; }
-                                uint i2 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i2 * pc.b_stride.z;
-                            }
-                            if (pc.b_rank > 3u) {
-                                uint i3 = remaining;
-                                phys_idx += i3 * pc.b_stride.w;
-                            }
-                            return pc.b_base + phys_idx;
-                        }
-
-                        void add_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index_a(idx);
-                            uint b_idx = get_strided_index_b(idx);
-                            output_data[idx] = lhs_data[a_idx] + rhs_data[b_idx];
-                        }
-
-                        void sub_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index_a(idx);
-                            uint b_idx = get_strided_index_b(idx);
-                            output_data[idx] = lhs_data[a_idx] - rhs_data[b_idx];
-                        }
-
-                        void div_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index_a(idx);
-                            uint b_idx = get_strided_index_b(idx);
-                            output_data[idx] = lhs_data[a_idx] / rhs_data[b_idx];
-                        }
-
-                        void mul_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index_a(idx);
-                            uint b_idx = get_strided_index_b(idx);
-                            output_data[idx] = lhs_data[a_idx] * rhs_data[b_idx];
-                        }
-
-                        void min_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index_a(idx);
-                            uint b_idx = get_strided_index_b(idx);
-                            output_data[idx] = min(lhs_data[a_idx], rhs_data[b_idx]);
-                        }
-
-                        void max_op() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            uint a_idx = get_strided_index_a(idx);
-                            uint b_idx = get_strided_index_b(idx);
-                            output_data[idx] = max(lhs_data[a_idx], rhs_data[b_idx]);
-                        }
-
-                        // Conditional main() selection based on the define.
-                        void main() { OP(); }
-                    ",
-                    define: [("OP", $op), ("TYPE", $ty)]
-                }
-            }
-        )*
-    };
-}
-
-macro_rules! reduce_partial_shaders {
-    ($( ($mod:ident, $op:literal, $ty:literal, $to_index:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-
-                        // --- Reduction Operation Macros ---
-                        // For OP == 0 (SUM)
-                        #if OP == 0
-                            #define REDUCE(a, b, ai, bi) a += b
-                        #else
-                            // For OP == 1 (MAX/ARGMAX) or OP == 2 (MIN/ARGMIN)
-                            #if OP == 1
-                                // For argmax: update if new value is greater,
-                                // or if equal and new index is greater.
-                                #define REDUCE(a, b, ai, bi) if ((a) < (b)) { a = b; ai = bi; }
-                            #elif OP == 2
-                                // For argmin: update if new value is smaller,
-                                // or if equal and new index is greater.
-                                #define REDUCE(a, b, ai, bi) if ((a) > (b)) { a = b; ai = bi; }
-                            #endif
-                        #endif
-
-                        // Use a workgroup size of 256.
-                        layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-                        // Binding 0: Input tensor buffer.
-                        layout(std430, binding = 0) readonly buffer InputBuffer {
-                            TYPE data[];
-                        };
-
-                        // Binding 1: Partial candidate values.
-                        layout(std430, binding = 1) writeonly buffer PartialValueBuffer {
-                            TYPE partialValues[];
-                        };
-
-                        // Binding 2: Partial candidate indices.
-                        layout(std430, binding = 2) writeonly buffer PartialIndexBuffer {
-                            uint partialIndices[];
-                        };
-
-                        // Push constants carrying tensor metadata.
-                        layout(push_constant) uniform ReducePushConstants {
-                            uint base;
-                            uint rank;
-                            uvec4 shape;
-                            uvec4 stride;
-                            uvec4 reduce_axes;
-                        } pc;
-
-                        // Shared memory arrays for the intra-workgroup reduction.
-                        shared TYPE sdata[256];
-                        shared uint sindex[256];
-                        shared bool svalid[256];
-
-                        // Compute the physical offset for a flattened reduction index.
-                        uint compute_reduction_offset(uint flat_index) {
-                            uint offset = 0u;
-                            uint remainder = flat_index;
-                            for (uint i = 0u; i < 4u; i++) {
-                                uint red = pc.reduce_axes[i];
-                                if (red == 0xFFFFFFFFu) break;
-                                uint dim_size = pc.shape[red];
-                                uint idx = remainder % dim_size;
-                                remainder = remainder / dim_size;
-                                offset += idx * pc.stride[red];
-                            }
-                            return offset;
-                        }
-
-                        // Compute the base index for non-reduced dimensions from a logical batch index.
-                        uint get_base_index(uint logical_idx) {
-                            uint out_shape[4];
-                            uint out_stride[4];
-                            uint out_rank = 0;
-                            for (uint d = 0u; d < pc.rank; d++) {
-                                bool is_reduced = (pc.reduce_axes.x == d ||
-                                                   pc.reduce_axes.y == d ||
-                                                   pc.reduce_axes.z == d ||
-                                                   pc.reduce_axes.w == d);
-                                if (!is_reduced) {
-                                    out_shape[out_rank] = pc.shape[d];
-                                    out_stride[out_rank] = pc.stride[d];
-                                    out_rank++;
-                                }
-                            }
-                            uint remaining = logical_idx;
-                            uint phys_idx = 0u;
-                            for (uint i = 0u; i < out_rank; i++) {
-                                uint prod = 1u;
-                                for (uint j = i + 1u; j < out_rank; j++) {
-                                    prod *= out_shape[j];
-                                }
-                                uint coordinate = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += coordinate * out_stride[i];
-                            }
-                            return pc.base + phys_idx;
-                        }
-
-                        void main() {
-                            uint local_id = gl_LocalInvocationID.x;
-                            uint wg_size = gl_WorkGroupSize.x; // 256
-
-                            // Compute the flattened reduction size (product over all reduction axes).
-                            uint flatReductionSize = 1u;
-                            for (uint i = 0u; i < 4u; i++) {
-                                uint red = pc.reduce_axes[i];
-                                if (red == 0xFFFFFFFFu) break;
-                                flatReductionSize *= pc.shape[red];
-                            }
-
-                            // Divide the flattened reduction space into segments.
-                            uint segments_per_batch = (flatReductionSize + wg_size - 1u) / wg_size;
-                            uint global_wgid = gl_WorkGroupID.x;
-                            uint batch_id   = global_wgid / segments_per_batch;
-                            uint segment_id = global_wgid % segments_per_batch;
-
-                            // Compute the base index for this batch.
-                            uint base_idx = get_base_index(batch_id);
-
-                            // Determine segment start and segment length.
-                            uint seg_start = segment_id * wg_size;
-                            uint seg_length = flatReductionSize - seg_start;
-                            if (seg_length > wg_size) seg_length = wg_size;
-
-                            bool hasValue = false;
-                            TYPE candidate_val = 0;
-                            uint candidate_idx = 0u;
-
-                            // Each thread processes a strided subset of the segment.
-                            for (uint i = local_id; i < seg_length; i += wg_size) {
-                                uint flat_idx = seg_start + i;
-                                uint red_offset = compute_reduction_offset(flat_idx);
-                                uint src_index = base_idx + red_offset;
-                                TYPE val = data[src_index];
-                                if (!hasValue) {
-                                    candidate_val = val;
-                                    candidate_idx = flat_idx;
-                                    hasValue = true;
-                                } else {
-                                    REDUCE(candidate_val, val, candidate_idx, flat_idx);
-                                }
-                            }
-
-                            sdata[local_id] = candidate_val;
-                            sindex[local_id] = candidate_idx;
-                            svalid[local_id] = hasValue;
-                            barrier();
-
-                            // Use the actual number of loaded elements (seg_length) for reduction.
-                            uint laneCount = seg_length;
-                            while (laneCount > 1u) {
-                                uint newCount = (laneCount + 1u) >> 1u;
-                                if (local_id < newCount) {
-                                    uint partner = local_id + newCount;
-                                    if (partner < laneCount) {
-                                        bool validA = svalid[local_id];
-                                        bool validB = svalid[partner];
-                                        if (!validA && validB) {
-                                            sdata[local_id] = sdata[partner];
-                                            sindex[local_id] = sindex[partner];
-                                            svalid[local_id] = true;
-                                        } else if (validA && validB) {
-                                            REDUCE(sdata[local_id], sdata[partner],
-                                                   sindex[local_id], sindex[partner]);
-                                        }
-                                    }
-                                }
-                                barrier();
-                                laneCount = newCount;
-                            }
-
-                            // Write the partial result for this workgroup.
-                            if (local_id == 0u) {
-                                partialValues[global_wgid] = sdata[0];
-                                partialIndices[global_wgid] = sindex[0];
-                            }
-                        }
-                    ",
-                    define: [("OP", $op), ("TYPE", $ty), ("TO_INDEX", $to_index)]
-                }
-            }
-        )*
-    };
-}
-
-macro_rules! reduce_combine_shaders {
-    ($( ($mod:ident, $op:literal, $ty:literal, $to_index:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-
-                        #if OP == 0
-                            #define REDUCE(a, b, ai, bi) a += b
-                        #else
-                            #if OP == 1
-                                #define REDUCE(a, b, ai, bi) if ((a) < (b)) { a = b; ai = bi; }
-                            #elif OP == 2
-                                #define REDUCE(a, b, ai, bi) if ((a) > (b)) { a = b; ai = bi; }
-                            #endif
-                        #endif
-
-                        // Use a workgroup size of 256.
-                        layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-                        // Binding 0: Partial candidate values.
-                        layout(std430, binding = 0) readonly buffer PartialValueBuffer {
-                            TYPE partialValues[];
-                        };
-
-                        // Binding 1: Partial candidate indices.
-                        layout(std430, binding = 1) readonly buffer PartialIndexBuffer {
-                            uint partialIndices[];
-                        };
-
-                        // Binding 2: Final candidate values (output).
-                        layout(std430, binding = 2) writeonly buffer FinalValueBuffer {
-                            TYPE finalValues[];
-                        };
-
-                        // Binding 3: Final candidate indices (output).
-                        layout(std430, binding = 3) writeonly buffer FinalIndexBuffer {
-                            uint finalIndices[];
-                        };
-
-                        // Push constant: number of partials per batch.
-                        layout(push_constant) uniform CombinePushConstants {
-                            uint num_partials;
-                        } pc;
-
-                        // Shared memory arrays for reduction.
-                        shared TYPE sdata[256];
-                        shared uint sindex[256];
-                        shared bool svalid[256];
-
-                        void main() {
-                            uint local_id = gl_LocalInvocationID.x;
-                            // Each workgroup reduces the partial results for one batch.
-                            uint batch_id = gl_WorkGroupID.x;
-                            uint base_idx = batch_id * pc.num_partials;
-
-                            bool hasValue = false;
-                            TYPE candidate_val = 0;
-                            uint candidate_idx = 0u;
-
-                            // Each thread loads a subset of the partials.
-                            for (uint i = local_id; i < pc.num_partials; i += gl_WorkGroupSize.x) {
-                                uint idx = base_idx + i;
-                                TYPE val = partialValues[idx];
-                                uint ind = partialIndices[idx];
-                                if (!hasValue) {
-                                    candidate_val = val;
-                                    candidate_idx = ind;
-                                    hasValue = true;
-                                } else {
-                                    REDUCE(candidate_val, val, candidate_idx, ind);
-                                }
-                            }
-                            sdata[local_id] = candidate_val;
-                            sindex[local_id] = candidate_idx;
-                            svalid[local_id] = hasValue;
-                            barrier();
-
-                            uint laneCount = pc.num_partials;
-                            while (laneCount > 1u) {
-                                uint newCount = (laneCount + 1u) >> 1u;
-                                if (local_id < newCount) {
-                                    uint partner = local_id + newCount;
-                                    if (partner < laneCount) {
-                                        bool validA = svalid[local_id];
-                                        bool validB = svalid[partner];
-                                        if (!validA && validB) {
-                                            sdata[local_id] = sdata[partner];
-                                            sindex[local_id] = sindex[partner];
-                                            svalid[local_id] = true;
-                                        } else if (validA && validB) {
-                                            REDUCE(sdata[local_id], sdata[partner],
-                                                   sindex[local_id], sindex[partner]);
-                                        }
-                                    }
-                                }
-                                barrier();
-                                laneCount = newCount;
-                            }
-
-                            if (local_id == 0u) {
-                                finalValues[batch_id] = sdata[0];
-                                finalIndices[batch_id] = sindex[0];
-                            }
-                        }
-                    ",
-                    define: [("OP", $op), ("TYPE", $ty), ("TO_INDEX", $to_index)]
-                }
-            }
-        )*
-    };
-}
-
-macro_rules! affine_elu_shaders {
-    ($( ($mod:ident, $op:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-                        // Buffer bindings.
-                        layout(set = 0, binding = 0) buffer InputBuffer {
-                            float input_data[];
-                        };
-                        layout(set = 0, binding = 1) buffer OutputBuffer {
-                            float output_data[];
-                        };
-
-                        // Push constants carrying full layout information (up to 4 dimensions)
-                        // plus the affine parameters.
-                        layout(push_constant) uniform PushConstants {
-                            uint base;
-                            uint rank;         // number of dimensions
-                            uvec4 shape;       // padded shape (unused dimensions set to 1)
-                            uvec4 stride;      // padded stride (unused dimensions set to 1)
-                            float mul;         // multiplier
-                            float add;         // additive constant
-                            float alpha;       // ELU alpha
-                        } pc;
-
-                        // This function converts a linear index to a physical index using the full
-                        // multi-dimensional layout. We assume row-major ordering.
-                        uint get_strided_index(uint lin_idx) {
-                            uint remaining = lin_idx;
-                            uint phys_idx = 0;
-                            if (pc.rank > 0u) {
-                                uint prod = 1u;
-                                if (pc.rank > 1u) { prod = pc.shape.y * pc.shape.z * pc.shape.w; }
-                                uint i0 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i0 * pc.stride.x;
-                            }
-                            if (pc.rank > 1u) {
-                                uint prod = 1u;
-                                if (pc.rank > 2u) { prod = pc.shape.z * pc.shape.w; }
-                                uint i1 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i1 * pc.stride.y;
-                            }
-                            if (pc.rank > 2u) {
-                                uint prod = 1u;
-                                if (pc.rank > 3u) { prod = pc.shape.w; }
-                                uint i2 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i2 * pc.stride.z;
-                            }
-                            if (pc.rank > 3u) {
-                                uint i3 = remaining;
-                                phys_idx += i3 * pc.stride.w;
-                            }
-                            return pc.base + phys_idx;
-                        }
-
-                        void affine_op() {
-                            uint lin_idx = gl_GlobalInvocationID.x;
-                            uint data_index = get_strided_index(lin_idx);
-                            float x = input_data[data_index];
-                            output_data[lin_idx] = x * pc.mul + pc.add;
-                        }
-
-                        void elu_op() {
-                            uint lin_idx = gl_GlobalInvocationID.x;
-                            uint data_index = get_strided_index(lin_idx);
-                            float x = input_data[data_index];
-                            output_data[lin_idx] = (x >= 0.0) ? x : pc.alpha * (exp(x) - 1.0);
-                        }
-
-                        void main() {
-                            OP();
-                    }
-                    ",
-                    // Pass the op type as a preprocessor definition.
-                    define: [("OP", $op)]
-                }
-            }
-        )*
-    }
-}
-macro_rules! copy2d_shaders {
-    ($( ($mod:ident, $ty:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-                        #extension GL_ARB_gpu_shader_int64 : require
-
-                        // Use a 16x16 workgroup.
-                        layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-
-                        // Source buffer (read-only).
-                        layout(set = 0, binding = 0) readonly buffer SrcBuffer {
-                            TYPE src_data[];
-                        };
-                        // Destination buffer (write-only).
-                        layout(set = 0, binding = 1) writeonly buffer DstBuffer {
-                            TYPE dst_data[];
-                        };
-
-                        // Push constants for region parameters.
-                        // Order:
-                        //  src_offset, dst_offset,
-                        //  rows, cols,
-                        //  src_stride, dst_stride.
-                        layout(push_constant) uniform Copy2DPushConstants {
-                            uint src_offset;
-                            uint dst_offset;
-                            uint rows;        // d1: number of rows to copy
-                            uint cols;        // d2: number of columns to copy
-                            uint src_stride;  // source row stride
-                            uint dst_stride;  // destination row stride
-                        } pc;
-
-                        void main() {
-                            uint x = gl_GlobalInvocationID.x; // column index within the region
-                            uint y = gl_GlobalInvocationID.y; // row index within the region
-                            if (x < pc.cols && y < pc.rows) {
-                                uint src_index = pc.src_offset + y * pc.src_stride + x;
-                                uint dst_index = pc.dst_offset + y * pc.dst_stride + x;
-                                dst_data[dst_index] = src_data[src_index];
-                            }
-                        }
-                    ",
-                    define: [("TYPE", $ty)]
-                }
-            }
-        )*
-    }
-}
-
-macro_rules! copy_strided_src_shaders {
-    ($( ($mod:ident, $ty:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-                        #extension GL_ARB_gpu_shader_int64 : require
-
-                        // Use a 256-thread 1D workgroup.
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-                        // Source buffer (read-only).
-                        layout(set = 0, binding = 0) readonly buffer SrcBuffer {
-                            TYPE src_data[];
-                        };
-                        // Destination buffer (write-only).
-                        layout(set = 0, binding = 1) writeonly buffer DstBuffer {
-                            TYPE dst_data[];
-                        };
-
-                        // Push constants carrying full layout information for the source tensor
-                        // plus a destination offset.
-                        // We assume a maximum rank of 4.
-                        layout(push_constant) uniform PushConstants {
-                            uint base;
-                            uint rank;
-                            uvec4 shape;
-                            uvec4 stride;
-                            uint dst_offset;
-                        } pc;
-
-                        // Compute the physical index in the source from a linear index using full layout.
-                        uint get_strided_index(uint lin_idx) {
-                            uint remaining = lin_idx;
-                            uint phys_idx = 0;
-                            if (pc.rank > 0u) {
-                                uint prod = 1u;
-                                if (pc.rank > 1u) { prod = pc.shape.y * pc.shape.z * pc.shape.w; }
-                                uint i0 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i0 * pc.stride.x;
-                            }
-                            if (pc.rank > 1u) {
-                                uint prod = 1u;
-                                if (pc.rank > 2u) { prod = pc.shape.z * pc.shape.w; }
-                                uint i1 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i1 * pc.stride.y;
-                            }
-                            if (pc.rank > 2u) {
-                                uint prod = 1u;
-                                if (pc.rank > 3u) { prod = pc.shape.w; }
-                                uint i2 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i2 * pc.stride.z;
-                            }
-                            if (pc.rank > 3u) {
-                                uint i3 = remaining;
-                                phys_idx += i3 * pc.stride.w;
-                            }
-                            return pc.base + phys_idx;
-                        }
-
-                        void main() {
-                            uint lin_idx = gl_GlobalInvocationID.x;
-                            // Compute total number of elements.
-                            uint total_elements = pc.shape.x * pc.shape.y * pc.shape.z * pc.shape.w;
-                            if (lin_idx < total_elements) {
-                                uint src_index = get_strided_index(lin_idx);
-                                // Write contiguously starting at dst_offset.
-                                dst_data[pc.dst_offset + lin_idx] = src_data[src_index];
-                            }
-                        }
-                    ",
-                    define: [("TYPE", $ty)]
-                }
-            }
-        )*
-    }
-}
-
-macro_rules! cmp_shaders {
-    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-
-                        #extension GL_EXT_shader_8bit_storage : require
-
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-                        // Input buffers containing values of type TYPE.
-                        layout(set = 0, binding = 0) buffer LhsBuffer {
-                            TYPE lhs_data[];
-                        };
-                        layout(set = 0, binding = 1) buffer RhsBuffer {
-                            TYPE rhs_data[];
-                        };
-                        // Output buffer contains unsigned integers: 1 means true, 0 means false.
-                        layout(set = 0, binding = 2) buffer OutBuffer {
-                            uint8_t out_data[];
-                        };
-
-                        // The comparison operation is chosen by the preprocessor define OP.
-                        void main() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            out_data[idx] = uint8_t((lhs_data[idx] OP rhs_data[idx]) ? 1u : 0u);
-                        }
-                    ",
-                    define: [("OP", $op), ("TYPE", $ty)]
-                }
-            }
-        )*
-    };
-}
-
-macro_rules! rand_shaders {
-    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-
-                        layout(set = 0, binding = 0) uniform SeedUniform {
-                            uint globalSeed;
-                        };
-
-                        layout(set = 0, binding = 1) buffer OutputBuffer {
-                            float values[];
-                        } outBuffer;
-
-                        uint hash(uint x) {
-                            x = (x ^ 61u) ^ (x >> 16);
-                            x *= 9u;
-                            x = x ^ (x >> 4);
-                            x *= 0x27d4eb2du;
-                            x = x ^ (x >> 15);
-                            return x;
-                        }
-
-                        // Stateless PCG32: given a unique index and the global seed, produce a random float in [0,1)
-                        float pcg32_stateless(uint index, uint seed) {
-                            // Combine the index with the global seed.
-                            uint state = hash(index ^ seed);
-
-                            // PCG-XSH-RR output function (one iteration of xorshift mixing):
-                            state ^= state << 13;
-                            state ^= state >> 17;
-                            state ^= state << 5;
-                            return float(state) / 4294967296.0;  // scale to [0,1)
-                        }
-
-                        void main() {
-                            uint idx = gl_GlobalInvocationID.x;
-                            outBuffer.values[idx] =pcg32_stateless(idx, globalSeed);
-                        }
-                    ",
-                    define: [("OP", $op), ("TYPE", $ty)]
-                }
-            }
-        )*
-    };
 }
 
 impl VulkanDevice {
@@ -1010,6 +61,14 @@ impl VulkanDevice {
             .nth(gpu_id)
             .ok_or(VulkanError::Message(String::from("ordinal out of range")))?;
         Ok(physical)
+    }
+
+    pub fn kernels(&self) -> &Kernels {
+        &self.kernels
+    }
+
+    pub fn device(&self) -> Arc<Device> {
+        self.device.clone()
     }
 
     pub(crate) fn to_cpu<T: BufferContents + Clone + Copy + Send>(
@@ -1082,7 +141,7 @@ impl VulkanDevice {
         // Allocate device buffer
         let buffer_size = count * type_size;
         let alignment = std::mem::align_of::<T>();
-        let buffer = self.allocate(buffer_size, dtype, alignment)?;
+        let buffer = self.allocate(buffer_size, alignment)?;
 
         if let Some(ref buffer) = buffer {
             let mut builder = AutoCommandBufferBuilder::primary(
@@ -1163,12 +222,7 @@ impl VulkanDevice {
     }
 
     // XXX alignment should really be gotten from dtype.
-    fn allocate(
-        &self,
-        buffer_size: usize,
-        dtype: DType,
-        alignment: usize,
-    ) -> Result<Option<Subbuffer<[u8]>>> {
+    fn allocate(&self, buffer_size: usize, alignment: usize) -> Result<Option<Subbuffer<[u8]>>> {
         if buffer_size == 0 {
             return Ok(None);
         }
@@ -1189,89 +243,11 @@ impl VulkanDevice {
     }
 }
 
-macro_rules! cast_shaders {
-    ($( ($mod:ident, $src:literal, $dst:literal, $need_uint_cast:literal) ),* $(,)?) => {
-        $(
-            mod $mod {
-                // This macro invocation creates a shader module at compile time.
-                vulkano_shaders::shader! {
-                    ty: "compute",
-                    src: "
-                        #version 450
-                        #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
-                        #extension GL_EXT_shader_8bit_storage : require
-                        #extension GL_EXT_shader_16bit_storage : require
-                        #extension GL_AMD_gpu_shader_half_float: enable
-
-                        #if NEED_UINT_CAST
-                            #define CAST(x) uint(x)
-                        #else
-                            #define CAST(x) x
-                        #endif
-
-                        layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-                        layout(set = 0, binding = 0) buffer Input {
-                            SRC_TYPE input_data[];
-                        };
-                        layout(set = 0, binding = 1) buffer Output {
-                            DST_TYPE output_data[];
-                        };
-                        layout(push_constant) uniform PushConstants {
-                            uint base;
-                            uint rank;         // number of dimensions
-                            uvec4 shape;       // padded shape (unused dimensions set to 1)
-                            uvec4 stride;      // padded stride (unused dimensions set to 1)
-                        } pc;
-
-                        // This function converts a linear index to a physical index using the full
-                        // multi-dimensional layout. We assume row-major ordering.
-                        uint get_strided_index(uint lin_idx) {
-                            uint remaining = lin_idx;
-                            uint phys_idx = 0;
-                            if (pc.rank > 0u) {
-                                uint prod = 1u;
-                                if (pc.rank > 1u) { prod = pc.shape.y * pc.shape.z * pc.shape.w; }
-                                uint i0 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i0 * pc.stride.x;
-                            }
-                            if (pc.rank > 1u) {
-                                uint prod = 1u;
-                                if (pc.rank > 2u) { prod = pc.shape.z * pc.shape.w; }
-                                uint i1 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i1 * pc.stride.y;
-                            }
-                            if (pc.rank > 2u) {
-                                uint prod = 1u;
-                                if (pc.rank > 3u) { prod = pc.shape.w; }
-                                uint i2 = remaining / prod;
-                                remaining = remaining % prod;
-                                phys_idx += i2 * pc.stride.z;
-                            }
-                            if (pc.rank > 3u) {
-                                uint i3 = remaining;
-                                phys_idx += i3 * pc.stride.w;
-                            }
-                            return pc.base + phys_idx;
-                        }
-
-                        void main() {
-                            uint idx = get_strided_index(gl_GlobalInvocationID.x);
-                            output_data[idx] = DST_TYPE(CAST(input_data[idx]));
-                        }",
-                    define: [("SRC_TYPE", $src), ("DST_TYPE", $dst),("NEED_UINT_CAST", $need_uint_cast)]
-                }
-            }
-        )*
-    };
-}
-
 impl crate::backend::BackendDevice for VulkanDevice {
     type Storage = VulkanStorage;
 
     fn new(ordinal: usize) -> Result<Self> {
-        let library = VulkanLibrary::new().map_err(|err| VulkanError::from(err))?;
+        let library = VulkanLibrary::new().map_err(VulkanError::from)?;
         let instance = Instance::new(
             library,
             InstanceCreateInfo {
@@ -1334,6 +310,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
             StandardDescriptorSetAllocatorCreateInfo::default(),
         ));
 
+        let kernels = Arc::new(Kernels::new(device.clone()).map_err(VulkanError::from)?);
+
         // // Initialize zero-init compute pipeline
         // let zero_init_pipeline = {
         //     mod cs {
@@ -1363,469 +341,15 @@ impl crate::backend::BackendDevice for VulkanDevice {
         //     )?
         // };
 
-        let cast_pipelines = {
-            cast_shaders!(
-                (float_to_half, "float", "float16_t", "0"),
-                (half_to_float, "float16_t", "float", "0"),
-                (uint_to_float, "uint", "float", "0"),
-                (uint_to_uint8_t, "uint", "uint8_t", "0"),
-                (uint8_t_to_float, "uint8_t", "float", "1")
-            );
-            let shaders = [
-                float_to_half::load(device.clone())
-                    .map_err(VulkanError::ValidatedVulkanError)
-                    .map_err(|e| {
-                        if let VulkanError::ValidatedVulkanError(ref e) = e {
-                            println!("Error: {:?}", e);
-                        }
-                        e
-                    })?,
-                half_to_float::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
-                uint_to_float::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
-                uint_to_uint8_t::load(device.clone()).map_err(VulkanError::ValidatedVulkanError)?,
-                uint8_t_to_float::load(device.clone())
-                    .map_err(VulkanError::ValidatedVulkanError)?,
-            ];
-            // Create the pipelines
-            shaders
-                .into_iter()
-                .map(|shader| {
-                    let stage = PipelineShaderStageCreateInfo::new(
-                        shader
-                            .entry_point("main")
-                            .ok_or(VulkanError::Message("No entry point".to_string()))
-                            .unwrap(), // XXX
-                    );
-                    let layout = PipelineLayout::new(
-                        device.clone(),
-                        PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                            .into_pipeline_layout_create_info(device.clone())
-                            .map_err(|e| VulkanError::Message(e.to_string()))
-                            .unwrap(), // XXX
-                    )
-                    .map_err(|e| VulkanError::Message(e.to_string()))
-                    .unwrap(); // XXX
-                    ComputePipeline::new(
-                        device.clone(),
-                        None,
-                        ComputePipelineCreateInfo::stage_layout(stage, layout),
-                    )
-                    .map_err(|e| VulkanError::Message(e.to_string()))
-                    .unwrap() // XXX
-                })
-                .collect::<Vec<_>>()
-        };
-
-        unary_shaders!(
-            (neg_shader, "neg_op", "float", "float"),
-            (gelu_shader, "gelu_op", "float", "float"),
-            (gelu_erf_shader, "gelu_erf_op", "float", "float"),
-            (erf_shader, "erf_op", "float", "float"),
-            (silu_shader, "silu_op", "float", "float"),
-            (ceil_shader, "ceil_op", "float", "float"),
-            (floor_shader, "floor_op", "float", "float"),
-            (round_shader, "round_op", "float", "float"),
-            (sign_shader, "sign_op", "float", "float"),
-            (sqr_shader, "sqr_op", "float", "float"),
-            (neg_shader_f16, "neg_op", "float", "float16_t"),
-            (gelu_shader_f16, "gelu_op", "float", "float16_t"),
-            (gelu_erf_shader_f16, "gelu_erf_op", "float", "float16_t"),
-            (erf_shader_f16, "erf_op", "float", "float16_t"),
-            (silu_shader_f16, "silu_op", "float", "float16_t"),
-            (ceil_shader_f16, "ceil_op", "float", "float16_t"),
-            (floor_shader_f16, "floor_op", "float", "float16_t"),
-            (round_shader_f16, "round_op", "float", "float16_t"),
-            (sign_shader_f16, "sign_op", "float", "float16_t"),
-            (sqr_shader_f16, "sqr_op", "float", "float16_t"),
-        );
-
-        // unary_shaders!(
-        //     (neg_shader_f64, "neg_op", "double"),
-        //     (gelu_shader_f64, "gelu_op", "double"),
-        //     (gelu_erf_shader_f64, "gelu_erf_op", "double"),
-        //     (erf_shader_f64, "erf_op", "double"),
-        //     (silu_shader_f64, "silu_op", "double"),
-        //     (ceil_shader_f64, "ceil_op", "double"),
-        //     (floor_shader_f64, "floor_op", "double"),
-        //     (round_shader_f64, "round_op", "double"),
-        //     (sign_shader_f64, "sign_op", "double"),
-        // );
-
-        macro_rules! load_unary_pipelines {
-            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
-                use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-                use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
-                use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                use std::collections::HashMap;
-                use crate::VulkanError; // Your existing error handling enum.
-
-                let mut map = HashMap::new();
-                $(
-                    let shader = $mod::load($device.clone()).map_err(VulkanError::ValidatedVulkanError)?;
-                    let entry_point = shader
-                        .entry_point("main")
-                        .ok_or_else(|| VulkanError::Message(format!("Entry point missing: {}", $name)))?;
-                    let stage = PipelineShaderStageCreateInfo::new(entry_point);
-                    let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                        .into_pipeline_layout_create_info($device.clone())
-                        .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
-                    let layout = PipelineLayout::new($device.clone(), layout_info)
-                        .map_err(VulkanError::ValidatedVulkanError)?;
-                    let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
-                    let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                    map.insert($name, pipeline);
-                )*
-                map
-            }};
-        }
-
-        let unary_pipelines = load_unary_pipelines!(
-            device,
-            "neg"          => neg_shader,
-            "gelu"         => gelu_shader,
-            "gelu_erf"     => gelu_erf_shader,
-            "erf"          => erf_shader,
-            "silu"         => silu_shader,
-            "ceil"         => ceil_shader,
-            "floor"        => floor_shader,
-            "round"        => round_shader,
-            "sign"         => sign_shader,
-            "sqr"          => sqr_shader,
-            "neg_f16"      => neg_shader_f16,
-            "gelu_f16"     => gelu_shader_f16,
-            "gelu_erf_f16" => gelu_erf_shader_f16,
-            "erf_f16"      => erf_shader_f16,
-            "silu_f16"     => silu_shader_f16,
-            "ceil_f16"     => ceil_shader_f16,
-            "floor_f16"    => floor_shader_f16,
-            "round_fq6"    => round_shader_f16,
-            "sign_f16"     => sign_shader_f16,
-            "sqr_f16"      => sqr_shader_f16,
-            // "neg_f64"      => neg_shader_f64,
-            // "gelu_f64"     => gelu_shader_f64,
-            // "gelu_erf_f64" => gelu_erf_shader_f64,
-            // "erf_f64"      => erf_shader_f64,
-            // "silu_f64"     => silu_shader_f64,
-            // "ceil_f64"     => ceil_shader_f64,
-            // "floor_f64"    => floor_shader_f64,
-            // "round_f64"    => round_shader_f64,
-            // "sign_f64"     => sign_shader_f64,
-        );
-
-        binary_shaders!(
-            (add_shader, "add_op", "float"),
-            (sub_shader, "sub_op", "float"),
-            (div_shader, "div_op", "float"),
-            (mul_shader, "mul_op", "float"),
-            (min_shader, "min_op", "float"),
-            (max_shader, "max_op", "float"),
-        );
-
-        macro_rules! load_binary_pipelines {
-            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
-                use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-                use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
-                use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                use std::collections::HashMap;
-                use crate::VulkanError; // Your existing error handling enum.
-
-                let mut map = HashMap::new();
-                $(
-                    let shader = $mod::load($device.clone()).map_err(VulkanError::ValidatedVulkanError)?;
-                    let entry_point = shader
-                        .entry_point("main")
-                        .ok_or_else(|| VulkanError::Message(format!("Entry point missing: {}", $name)))?;
-                    let stage = PipelineShaderStageCreateInfo::new(entry_point);
-                    let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                        .into_pipeline_layout_create_info($device.clone())
-                        .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
-                    let layout = PipelineLayout::new($device.clone(), layout_info)
-                        .map_err(VulkanError::ValidatedVulkanError)?;
-                    let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
-                    let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                    map.insert($name, pipeline);
-                )*
-                map
-            }};
-        }
-
-        let binary_pipelines = load_binary_pipelines!(
-            device,
-            "add"          => add_shader,
-            "sub"          => sub_shader,
-            "div"          => div_shader,
-            "mul"          => mul_shader,
-            "minimum"      => min_shader,
-            "maximum"      => max_shader,
-        );
-
-        reduce_partial_shaders!(
-            (sum_partial_shader, "0", "float", "0"),
-            (sum_partial_shader_u32, "0", "uint", "0"),
-            (argmax_partial_shader, "1", "float", "1"),
-            (max_partial_shader, "1", "float", "0"),
-            (argmax_partial_shader_u32, "1", "uint", "1"),
-            (max_partial_shader_u32, "1", "uint", "0"),
-            (argmin_partial_shader, "2", "float", "1"),
-            (min_partial_shader, "2", "float", "0"),
-            (argmin_partial_shader_u32, "2", "uint", "1"),
-            (min_partial_shader_u32, "2", "uint", "0"),
-        );
-
-        reduce_combine_shaders!(
-            (sum_combine_shader, "0", "float", "0"),
-            (sum_combine_shader_u32, "0", "uint", "0"),
-            (argmax_combine_shader, "1", "float", "1"),
-            (max_combine_shader, "1", "float", "0"),
-            (argmax_combine_shader_u32, "1", "uint", "1"),
-            (max_combine_shader_u32, "1", "uint", "0"),
-            (argmin_combine_shader, "2", "float", "1"),
-            (min_combine_shader, "2", "float", "0"),
-            (argmin_combine_shader_u32, "2", "uint", "1"),
-            (min_combine_shader_u32, "2", "uint", "0"),
-        );
-
-        macro_rules! load_reduce_pipelines {
-            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
-                use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-                use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
-                use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                use std::collections::HashMap;
-                use crate::VulkanError;
-
-                let mut map = HashMap::new();
-                $(
-                    let shader = $mod::load($device.clone()).map_err(VulkanError::ValidatedVulkanError)?;
-                    let entry_point = shader
-                        .entry_point("main")
-                        .ok_or_else(|| VulkanError::Message(format!("Entry point missing: {}", $name)))?;
-                    let stage = PipelineShaderStageCreateInfo::new(entry_point);
-                    let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                        .into_pipeline_layout_create_info($device.clone())
-                        .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
-                    let layout = PipelineLayout::new($device.clone(), layout_info)
-                        .map_err(VulkanError::ValidatedVulkanError)?;
-                    let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
-                    let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                    map.insert($name, pipeline);
-                )*
-                map
-            }};
-        }
-
-        let reduce_partial_pipelines = load_reduce_pipelines!(
-            device,
-            "argmax"       => argmax_partial_shader,
-            "argmax_u32"   => argmax_partial_shader_u32,
-            "argmin"       => argmin_partial_shader,
-            "argmin_u32"   => argmin_partial_shader_u32,
-            "max"          => max_partial_shader,
-            "max_u32"      => max_partial_shader_u32,
-            "min"          => min_partial_shader,
-            "min_u32"      => min_partial_shader_u32,
-            "sum"          => sum_partial_shader,
-            "sum_u32"      => sum_partial_shader_u32,
-        );
-
-        let reduce_combine_pipelines = load_reduce_pipelines!(
-            device,
-            "argmax"       => argmax_combine_shader,
-            "argmax_u32"   => argmax_combine_shader_u32,
-            "argmin"       => argmin_combine_shader,
-            "argmin_u32"   => argmin_combine_shader_u32,
-            "max"          => max_combine_shader,
-            "max_u32"      => max_combine_shader_u32,
-            "min"          => min_combine_shader,
-            "min_u32"      => min_combine_shader_u32,
-            "sum"          => sum_combine_shader,
-            "sum_u32"      => sum_combine_shader_u32,
-        );
-
-        affine_elu_shaders!((affine_shader, "affine_op"), (elu_shader, "elu_op"),);
-
-        macro_rules! load_affine_elu_pipelines {
-            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
-                 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-                 use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
-                 use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                 use std::collections::HashMap;
-                 let mut map = HashMap::new();
-                 $(
-                     let shader = $mod::load($device.clone())
-                         .map_err(VulkanError::ValidatedVulkanError)?;
-                     let entry_point = shader.entry_point("main")
-                         .ok_or_else(|| VulkanError::Message(format!("Missing entry point for {}", $name)))?;
-                     let stage = PipelineShaderStageCreateInfo::new(entry_point);
-                     let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                        .into_pipeline_layout_create_info($device.clone())
-                        .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
-                     let layout = PipelineLayout::new($device.clone(), layout_info)
-                        .map_err(VulkanError::ValidatedVulkanError)?;
-                     let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
-                     let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
-                        .map_err(VulkanError::ValidatedVulkanError)?;
-                     map.insert($name, pipeline);
-                 )*
-                 map
-            }};
-        }
-
-        let affine_elu_pipelines = load_affine_elu_pipelines!(
-            device,
-            "affine" => affine_shader,
-            "elu" => elu_shader,
-        );
-
-        copy2d_shaders!((copy2d_shader, "float"), (copy2d_shader_64, "int64_t"),);
-
-        copy_strided_src_shaders!(
-            (copy_strided_src_shader, "float"),
-            (copy_strided_src_shader_32, "uint"),
-            (copy_strided_src_shader_64, "int64_t"),
-        );
-
-        macro_rules! load_copy_shaders {
-            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {{
-                 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-                 use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
-                 use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                 use std::collections::HashMap;
-                 let mut map = HashMap::new();
-                 $(
-                     let shader = $mod::load($device.clone())
-                         .map_err(VulkanError::ValidatedVulkanError)?;
-                     let entry_point = shader.entry_point("main")
-                         .ok_or_else(|| VulkanError::Message(format!("Missing entry point for {}", $name)))?;
-                     let stage = PipelineShaderStageCreateInfo::new(entry_point);
-                     let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                        .into_pipeline_layout_create_info($device.clone())
-                        .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
-                     let layout = PipelineLayout::new($device.clone(), layout_info)
-                        .map_err(VulkanError::ValidatedVulkanError)?;
-                     let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
-                     let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
-                        .map_err(VulkanError::ValidatedVulkanError)?;
-                     map.insert($name, pipeline);
-                 )*
-                 map
-            }};
-        }
-
-        let copy_pipelines = load_copy_shaders!(
-            device,
-            "copy2d" => copy2d_shader,
-            "copy2d_64" => copy2d_shader_64,
-            "copy_strided_src" => copy_strided_src_shader,
-            "copy_strided_src_32" => copy_strided_src_shader_32,
-            "copy_strided_src_64" => copy_strided_src_shader_64,
-        );
-
-        cmp_shaders!((cmp_eq_shader, "==", "float"));
-        cmp_shaders!((cmp_ne_shader, "!=", "float"));
-        cmp_shaders!((cmp_lt_shader, "<", "float"));
-        cmp_shaders!((cmp_gt_shader, ">", "float"));
-        cmp_shaders!((cmp_le_shader, "<=", "float"));
-        cmp_shaders!((cmp_ge_shader, ">=", "float"));
-
-        macro_rules! load_cmp_pipelines {
-            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {
-                {
-                    use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-                    use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
-                    use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                    use std::collections::HashMap;
-                    let mut map = HashMap::new();
-                    $(
-                        let shader = $mod::load($device.clone())
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                        let entry_point = shader.entry_point("main")
-                            .ok_or_else(|| VulkanError::Message(format!("Missing cmp entry point for {}", $name)))?;
-                        let stage = PipelineShaderStageCreateInfo::new(entry_point);
-                        let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                            .into_pipeline_layout_create_info($device.clone())
-                            .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
-                        let layout = PipelineLayout::new($device.clone(), layout_info)
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                        let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
-                        let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                        map.insert($name, pipeline);
-                    )*
-                    map
-                }
-            };
-        }
-
-        let cmp_pipelines = load_cmp_pipelines!(
-            device,
-            "Eq" => cmp_eq_shader,
-            "Ne" => cmp_ne_shader,
-            "Lt" => cmp_lt_shader,
-            "Gt" => cmp_gt_shader,
-            "Le" => cmp_le_shader,
-            "Ge" => cmp_ge_shader,
-        );
-
-        rand_shaders!((rand_uniform_shader, "XXX", "XXX"));
-        rand_shaders!((rand_normal_shader, "XXX", "XXX"));
-
-        macro_rules! load_rand_pipelines {
-            ($device:expr, $($name:expr => $mod:ident),* $(,)?) => {
-                {
-                    use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-                    use vulkano::pipeline::layout::{PipelineLayout, PipelineDescriptorSetLayoutCreateInfo};
-                    use vulkano::pipeline::PipelineShaderStageCreateInfo;
-                    use std::collections::HashMap;
-                    let mut map = HashMap::new();
-                    $(
-                        let shader = $mod::load($device.clone())
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                        let entry_point = shader.entry_point("main")
-                            .ok_or_else(|| VulkanError::Message(format!("Missing rand entry point for {}", $name)))?;
-                        let stage = PipelineShaderStageCreateInfo::new(entry_point);
-                        let layout_info = PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
-                            .into_pipeline_layout_create_info($device.clone())
-                            .map_err(VulkanError::IntoPipelineLayoutCreateInfoError)?;
-                        let layout = PipelineLayout::new($device.clone(), layout_info)
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                        let pipeline_create_info = ComputePipelineCreateInfo::stage_layout(stage, layout);
-                        let pipeline = ComputePipeline::new($device.clone(), None, pipeline_create_info)
-                            .map_err(VulkanError::ValidatedVulkanError)?;
-                        map.insert($name, pipeline);
-                    )*
-                    map
-                }
-            };
-        }
-
-        let rand_pipelines = load_rand_pipelines!(
-            device,
-            "rand_uniform" => rand_uniform_shader,
-            "rand_normal" => rand_normal_shader,
-        );
-
         Ok(Self {
             ordinal,
             device,
             queue,
             memory_allocator,
             buffer_allocator,
+            kernels,
             command_buffer_allocator,
             descriptor_set_allocator,
-            //            pools: Arc::new(Mutex::new(HashMap::new())),
-            //            zero_init_pipeline: Arc::new(zero_init_pipeline),
-            cast_pipelines,
-            unary_pipelines,
-            binary_pipelines,
-            reduce_partial_pipelines,
-            reduce_combine_pipelines,
-            affine_elu_pipelines,
-            copy_pipelines,
-            cmp_pipelines,
-            rand_pipelines,
             global_seed: Arc::new(Mutex::new(0)),
         })
     }
@@ -1848,7 +372,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
     unsafe fn alloc_uninit(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let count = shape.elem_count();
         let type_size = dtype.size_in_bytes();
-        let buffer = self.allocate(count * type_size, dtype, type_size)?; // XXX alignment might need revisiting
+        let buffer = self.allocate(count * type_size, type_size)?; // XXX alignment might need revisiting
         Ok(VulkanStorage::new(buffer, self.clone(), count, dtype))
     }
 
@@ -1887,7 +411,26 @@ impl crate::backend::BackendDevice for VulkanDevice {
         low: f64,
         high: f64,
     ) -> Result<Self::Storage> {
-        fail!()
+        let suffix = match dtype {
+            DType::F32 => "f32",
+            dtype => crate::bail!("rand_uniform not implemented for {dtype:?}"),
+        };
+        let key = format!("rand_uniform_{}", suffix);
+        let pipeline = self
+            .kernels()
+            .load_pipeline(self.device(), &key)
+            .map_err(VulkanError::from)?;
+
+        let num_elements = shape.elem_count();
+        let storage = unsafe { self.alloc_uninit(shape, dtype) }?;
+
+        let seed = {
+            let lock = self.global_seed.lock().map_err(VulkanError::from)?;
+            *lock
+        };
+        storage.random_impl(shape, &pipeline, dtype, seed, low, high)?;
+
+        Ok(storage)
     }
 
     fn rand_normal(
@@ -1895,18 +438,42 @@ impl crate::backend::BackendDevice for VulkanDevice {
         shape: &Shape,
         dtype: DType,
         mean: f64,
-        std: f64,
+        stddev: f64,
     ) -> Result<Self::Storage> {
-        fail!()
+        let suffix = match dtype {
+            DType::F32 => "f32",
+            dtype => crate::bail!("rand_normal not implemented for {dtype:?}"),
+        };
+        let key = format!("rand_normal_{}", suffix);
+        let pipeline = self
+            .kernels()
+            .load_pipeline(self.device(), &key)
+            .map_err(VulkanError::from)?;
+
+        let num_elements = shape.elem_count();
+        let storage = unsafe { self.alloc_uninit(shape, dtype) }?;
+
+        let seed = {
+            let lock = self.global_seed.lock().map_err(VulkanError::from)?;
+            *lock
+        };
+        storage.random_impl(shape, &pipeline, dtype, seed, mean, stddev)?;
+
+        Ok(storage)
     }
 
     fn set_seed(&self, seed: u64) -> Result<()> {
+        // let seed: u32 = seed.try_into().map_err(|_| {
+        //     VulkanError::Message("Vulkan seed must be less than or equal to u32::MAX".to_string())
+        // })?;
+
         let mut global_seed = self.global_seed.lock().map_err(VulkanError::from)?;
         *global_seed = seed;
         Ok(())
     }
 
     fn synchronize(&self) -> Result<()> {
-        fail!()
+        crate::bail!("synchronize not implemented");
+        Ok(())
     }
 }

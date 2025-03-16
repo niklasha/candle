@@ -2,8 +2,10 @@
 
 mod device;
 
+use candle_vulkan_kernels::VulkanKernelError;
 pub use device::VulkanDevice;
 use std::sync::{PoisonError, TryLockError};
+
 mod storage;
 pub use storage::VulkanStorage;
 
@@ -60,5 +62,18 @@ pub enum VulkanError {
 impl From<String> for VulkanError {
     fn from(e: String) -> Self {
         VulkanError::Message(e)
+    }
+}
+
+impl From<&str> for VulkanError {
+    fn from(e: &str) -> Self {
+        VulkanError::Message(e.to_string())
+    }
+}
+
+impl From<VulkanKernelError> for VulkanError {
+    fn from(e: VulkanKernelError) -> Self {
+        // XXX map each VulkanKernelError enum to a VulkanError enum
+        VulkanError::Message(e.to_string())
     }
 }
