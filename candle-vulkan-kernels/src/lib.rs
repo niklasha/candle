@@ -243,8 +243,14 @@ impl Kernels {
         kernels.insert("cast_u32_f32".to_string(), uint_to_float::load(device.clone())?);
         kernels.insert("cast_u32_u8".to_string(), uint_to_uint8_t::load(device.clone())?);
         kernels.insert("cast_u8_f32".to_string(), uint8_t_to_float::load(device.clone())?);
+        kernels.insert("cast_bf16_f32".to_string(), bf16_to_float::load(device.clone())?);
+        kernels.insert("cast_f32_bf16".to_string(), float_to_bf16::load(device.clone())?);
+        kernels.insert("cast_bf16_u32".to_string(), bf16_to_uint::load(device.clone())?);
+        kernels.insert("cast_u32_bf16".to_string(), uint_to_bf16::load(device.clone())?);
 
         kernels.insert("neg_f32".to_string(), neg_float::load(device.clone())?);
+        kernels.insert("abs_f32".to_string(), abs_float::load(device.clone())?);
+        kernels.insert("sign_f32".to_string(), sign_float::load(device.clone())?);
         kernels.insert("gelu_f32".to_string(), gelu_float::load(device.clone())?);
         kernels.insert("gelu_erf_f32".to_string(), gelu_erf_float::load(device.clone())?);
         kernels.insert("erf_f32".to_string(), erf_float::load(device.clone())?);
@@ -252,9 +258,14 @@ impl Kernels {
         kernels.insert("ceil_f32".to_string(), ceil_float::load(device.clone())?);
         kernels.insert("floor_f32".to_string(), floor_float::load(device.clone())?);
         kernels.insert("round_f32".to_string(), round_float::load(device.clone())?);
-        kernels.insert("sign_f32".to_string(), sign_float::load(device.clone())?);
         kernels.insert("sqr_f32".to_string(), sqr_float::load(device.clone())?);
+        kernels.insert("sqrt_f32".to_string(), sqrt_float::load(device.clone())?);
+        kernels.insert("sin_f32".to_string(), sin_float::load(device.clone())?);
+        kernels.insert("cos_f32".to_string(), cos_float::load(device.clone())?);
+        kernels.insert("tan_f32".to_string(), tan_float::load(device.clone())?);
         kernels.insert("neg_f16".to_string(), neg_half::load(device.clone())?);
+        kernels.insert("abs_f16".to_string(), abs_half::load(device.clone())?);
+        kernels.insert("sign_f16".to_string(), sign_half::load(device.clone())?);
         kernels.insert("gelu_f16".to_string(), gelu_half::load(device.clone())?);
         kernels.insert("gelu_erf_f16".to_string(), gelu_erf_half::load(device.clone())?);
         kernels.insert("erf_f16".to_string(), erf_half::load(device.clone())?);
@@ -262,8 +273,11 @@ impl Kernels {
         kernels.insert("ceil_f16".to_string(), ceil_half::load(device.clone())?);
         kernels.insert("floor_f16".to_string(), floor_half::load(device.clone())?);
         kernels.insert("round_f16".to_string(), round_half::load(device.clone())?);
-        kernels.insert("sign_f16".to_string(), sign_half::load(device.clone())?);
         kernels.insert("sqr_f16".to_string(), sqr_half::load(device.clone())?);
+        kernels.insert("sqrt_f16".to_string(), sqrt_half::load(device.clone())?);
+        kernels.insert("sin_f16".to_string(), sin_half::load(device.clone())?);
+        kernels.insert("cos_f16".to_string(), cos_half::load(device.clone())?);
+        kernels.insert("tan_f16".to_string(), tan_half::load(device.clone())?);
 
         kernels.insert("add_f32".to_string(), add_float::load(device.clone())?);
         kernels.insert("sub_f32".to_string(), sub_float::load(device.clone())?);
@@ -297,6 +311,7 @@ impl Kernels {
         kernels.insert ("elu_f32".to_string(), elu_float::load(device.clone())?);
 
         kernels.insert ("copy2d_f32".to_string(), copy2d_float::load(device.clone())?);
+        kernels.insert ("copy2d_u32".to_string(), copy2d_uint::load(device.clone())?);
         kernels.insert ("copy2d_i64".to_string(), copy2d_int64_t::load(device.clone())?);
         kernels.insert ("copy_strided_src_f32".to_string(), copy_strided_src_float::load(device.clone())?);
         kernels.insert ("copy_strided_src_u32".to_string(), copy_strided_src_uint::load(device.clone())?);
@@ -317,6 +332,9 @@ impl Kernels {
 
         kernels.insert("rand_uniform_f32".to_string(), rand_uniform_float::load(device.clone())?);
         kernels.insert("rand_normal_f32".to_string(), rand_normal_float::load(device.clone())?);
+
+        kernels.insert("gemm_f32".to_string(), gemm_float::load(device.clone())?);
+        kernels.insert("gemm_bf16".to_string(), gemm_bf16::load(device.clone())?);
 
         Ok(Self {
             kernels,
@@ -370,25 +388,29 @@ impl Kernels {
 }
 
 macro_rules! cast_kernels {
-    ($( ($mod:ident, $src:literal, $dst:literal, $need_uint_cast:literal) ),* $(,)?) => {
+    ($( ($mod:ident, $src:literal, $dst:literal, $need_uint_cast:literal, $src_bf16:literal, $dst_bf16:literal)),* $(,)?) => {
         $(
             mod $mod {
                 // This macro invocation creates a shader module at compile time.
                 vulkano_shaders::shader! {
                     ty: "compute",
                     path: "src/cast.comp",
-                    define: [("SRC_TYPE", $src), ("DST_TYPE", $dst),("NEED_UINT_CAST", $need_uint_cast)]
+                    define: [("SRC_TYPE", $src), ("DST_TYPE", $dst),("NEED_UINT_CAST", $need_uint_cast), ("SRC_BF16", $src_bf16), ("DST_BF16", $dst_bf16)]
                 }
             }
         )*
     };
 }
 cast_kernels!(
-    (float_to_half, "float", "float16_t", "0"),
-    (half_to_float, "float16_t", "float", "0"),
-    (uint_to_float, "uint", "float", "0"),
-    (uint_to_uint8_t, "uint", "uint8_t", "0"),
-    (uint8_t_to_float, "uint8_t", "float", "1")
+    (float_to_half, "float", "float16_t", "0", "0", "0"),
+    (half_to_float, "float16_t", "float", "0", "0", "0"),
+    (uint_to_float, "uint", "float", "0", "0", "0"),
+    (uint_to_uint8_t, "uint", "uint8_t", "0", "0", "0"),
+    (uint8_t_to_float, "uint8_t", "float", "1", "0", "0"),
+    (bf16_to_float, "uint16_t", "float", "0", "1", "0"),
+    (float_to_bf16, "float", "uint16_t", "0", "0", "1"),
+    (bf16_to_uint, "uint16_t", "uint", "0", "1", "0"),
+    (uint_to_bf16, "uint", "uint16_t", "0", "0", "1"),
 );
 
 macro_rules! unary_kernels {
@@ -407,6 +429,8 @@ macro_rules! unary_kernels {
 
 unary_kernels!(
     (neg_float, "neg_op", "float", "float"),
+    (abs_float, "abs_op", "float", "float"),
+    (sign_float, "sign_op", "float", "float"),
     (gelu_float, "gelu_op", "float", "float"),
     (gelu_erf_float, "gelu_erf_op", "float", "float"),
     (erf_float, "erf_op", "float", "float"),
@@ -414,9 +438,14 @@ unary_kernels!(
     (ceil_float, "ceil_op", "float", "float"),
     (floor_float, "floor_op", "float", "float"),
     (round_float, "round_op", "float", "float"),
-    (sign_float, "sign_op", "float", "float"),
     (sqr_float, "sqr_op", "float", "float"),
+    (sqrt_float, "sqrt_op", "float", "float"),
+    (sin_float, "sin_op", "float", "float"),
+    (cos_float, "cos_op", "float", "float"),
+    (tan_float, "tan_op", "float", "float"),
     (neg_half, "neg_op", "float", "float16_t"),
+    (abs_half, "abs_op", "float", "float16_t"),
+    (sign_half, "sign_op", "float", "float16_t"),
     (gelu_half, "gelu_op", "float", "float16_t"),
     (gelu_erf_half, "gelu_erf_op", "float", "float16_t"),
     (erf_half, "erf_op", "float", "float16_t"),
@@ -424,8 +453,11 @@ unary_kernels!(
     (ceil_half, "ceil_op", "float", "float16_t"),
     (floor_half, "floor_op", "float", "float16_t"),
     (round_half, "round_op", "float", "float16_t"),
-    (sign_half, "sign_op", "float", "float16_t"),
     (sqr_half, "sqr_op", "float", "float16_t"),
+    (sqrt_half, "sqrt_op", "float", "float16_t"),
+    (sin_half, "sin_op", "float", "float16_t"),
+    (cos_half, "cos_op", "float", "float16_t"),
+    (tan_half, "tan_op", "float", "float16_t"),
 );
 
 // unary_kernels!(
@@ -552,6 +584,7 @@ macro_rules! copy2d_shaders {
 
 copy2d_shaders!(
     (copy2d_float, "float"),
+    (copy2d_uint, "uint"),
     (copy2d_int64_t, "int64_t"),
 );
 
@@ -622,6 +655,25 @@ macro_rules! rand_kernels {
 rand_kernels!(
     (rand_uniform_float, "1"),
     (rand_normal_float, "0"),
+);
+
+macro_rules! gemm_kernels {
+    ($( ($mod:ident, $ty:literal, $bf16:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/gemm.comp",
+                    define: [("TYPE", $ty), ("BF16", $bf16)]
+                }
+            }
+        )*
+    };
+}
+
+gemm_kernels!(
+    (gemm_float, "float", "0"),
+    (gemm_bf16, "uint16_t", "1"),
 );
 
 // #[allow(clippy::too_many_arguments)]

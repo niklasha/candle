@@ -1,0 +1,76 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_16bit_storage : require
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+    #define SUM_TYPE float
+#else
+    #define CAST_OUT(x) (x)
+    #define CAST_IN(x) (x)
+    #define SUM_TYPE TYPE
+#endif
+
+// Use a tiled 16×16 workgroup (the batch is handled via z-dimension).
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Matrix A (read-only).
+// It is assumed to be laid out as b batches, each with m rows and k columns.
+layout(set = 0, binding = 0) readonly buffer MatrixA {
+    TYPE a[];
+};
+
+// Matrix B (read-only).
+// It is assumed to be laid out as b batches, each with k rows and n columns.
+layout(set = 0, binding = 1) readonly buffer MatrixB {
+    TYPE b[];
+};
+
+// Matrix C (read-write).
+// It is assumed to be laid out as b batches, each with m rows and n columns.
+layout(set = 0, binding = 2) buffer MatrixC {
+    TYPE c[];
+};
+
+// Push constants provide dimensions and scaling factors.
+// The layout assumes that in each batch, A is (m x k), B is (k x n) and C is (m x n).
+layout(push_constant) uniform GemmPushConstants {
+    uint m;    // number of rows in A and C per batch.
+    uint n;    // number of columns in B and C per batch.
+    uint k;    // number of columns in A and rows in B per batch.
+    uint a_batch_stride; // physical batch stride for A (e.g. layout.stride()[0])
+    uint a_row_stride;   // physical row stride for A (e.g. layout.stride()[rank-2])
+    uint a_col_stride;   // physical column stride for A (e.g. layout.stride()[rank-1])
+    uint b_batch_stride; // physical batch stride for B
+    uint b_row_stride;   // physical row stride for B
+    uint b_col_stride;   // physical column stride for B
+    uint ldc;  // leading dimension of C per batch.
+    SUM_TYPE alpha; // scaling factor for A×B.
+    SUM_TYPE beta;  // scaling factor for C.
+} pc;
+
+void main() {
+    // Use a 3D dispatch:
+    // gl_GlobalInvocationID.x -> column,
+    // gl_GlobalInvocationID.y -> row,
+    // gl_GlobalInvocationID.z -> batch index.
+    uint col   = gl_GlobalInvocationID.x;
+    uint row   = gl_GlobalInvocationID.y;
+    uint batch = gl_GlobalInvocationID.z;
+
+    if (row >= pc.m || col >= pc.n) return;
+
+    SUM_TYPE sum = SUM_TYPE(0);
+    // Compute dot product for element (row, col) in the given batch.
+    for (uint i = 0u; i < pc.k; i++) {
+        uint a_index = batch * pc.a_batch_stride + row * pc.a_row_stride + i * pc.a_col_stride;
+        uint b_index = batch * pc.b_batch_stride + i * pc.b_row_stride + col * pc.b_col_stride;
+        sum += CAST_IN(a[a_index]) * CAST_IN(b[b_index]);
+    }
+
+    // Compute index into C: batch offset + row * ldc + col.
+    uint c_index = batch * (pc.m * pc.ldc) + row * pc.ldc + col;
+    c[c_index] = CAST_OUT(pc.alpha * sum + pc.beta * CAST_IN(c[c_index]));
+}

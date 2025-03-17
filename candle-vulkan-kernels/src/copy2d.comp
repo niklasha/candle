@@ -9,6 +9,7 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0) readonly buffer SrcBuffer {
     TYPE src_data[];
 };
+
 // Destination buffer (write-only).
 layout(set = 0, binding = 1) writeonly buffer DstBuffer {
     TYPE dst_data[];
