@@ -247,6 +247,7 @@ impl Kernels {
         kernels.insert("cast_f32_bf16".to_string(), float_to_bf16::load(device.clone())?);
         kernels.insert("cast_bf16_u32".to_string(), bf16_to_uint::load(device.clone())?);
         kernels.insert("cast_u32_bf16".to_string(), uint_to_bf16::load(device.clone())?);
+        kernels.insert("cast_bf16_f16".to_string(), bf16_to_half::load(device.clone())?);
 
         kernels.insert("neg_f32".to_string(), neg_float::load(device.clone())?);
         kernels.insert("abs_f32".to_string(), abs_float::load(device.clone())?);
@@ -278,6 +279,21 @@ impl Kernels {
         kernels.insert("sin_f16".to_string(), sin_half::load(device.clone())?);
         kernels.insert("cos_f16".to_string(), cos_half::load(device.clone())?);
         kernels.insert("tan_f16".to_string(), tan_half::load(device.clone())?);
+        kernels.insert("neg_bf16".to_string(), neg_bf16::load(device.clone())?);
+        kernels.insert("abs_bf16".to_string(), abs_bf16::load(device.clone())?);
+        kernels.insert("sign_bf16".to_string(), sign_bf16::load(device.clone())?);
+        kernels.insert("gelu_bf16".to_string(), gelu_bf16::load(device.clone())?);
+        kernels.insert("gelu_erf_bf16".to_string(), gelu_erf_bf16::load(device.clone())?);
+        kernels.insert("erf_bf16".to_string(), erf_bf16::load(device.clone())?);
+        kernels.insert("silu_bf16".to_string(), silu_bf16::load(device.clone())?);
+        kernels.insert("ceil_bf16".to_string(), ceil_bf16::load(device.clone())?);
+        kernels.insert("floor_bf16".to_string(), floor_bf16::load(device.clone())?);
+        kernels.insert("round_bf16".to_string(), round_bf16::load(device.clone())?);
+        kernels.insert("sqr_bf16".to_string(), sqr_bf16::load(device.clone())?);
+        kernels.insert("sqrt_bf16".to_string(), sqrt_bf16::load(device.clone())?);
+        kernels.insert("sin_bf16".to_string(), sin_bf16::load(device.clone())?);
+        kernels.insert("cos_bf16".to_string(), cos_bf16::load(device.clone())?);
+        kernels.insert("tan_bf16".to_string(), tan_bf16::load(device.clone())?);
 
         kernels.insert("add_f32".to_string(), add_float::load(device.clone())?);
         kernels.insert("sub_f32".to_string(), sub_float::load(device.clone())?);
@@ -411,16 +427,17 @@ cast_kernels!(
     (float_to_bf16, "float", "uint16_t", "0", "0", "1"),
     (bf16_to_uint, "uint16_t", "uint", "0", "1", "0"),
     (uint_to_bf16, "uint", "uint16_t", "0", "0", "1"),
+    (bf16_to_half, "uint16_t", "float16_t", "0", "1", "0"),
 );
 
 macro_rules! unary_kernels {
-    ($( ($mod:ident, $op:literal, $inner_type:literal, $outer_type:literal) ),* $(,)?) => {
+    ($( ($mod:ident, $op:literal, $inner_type:literal, $outer_type:literal, $bf16:literal) ),* $(,)?) => {
         $(
             mod $mod {
                 vulkano_shaders::shader! {
                     ty: "compute",
                     path: "src/unary.comp",
-                    define: [("OP", $op), ("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type)]
+                    define: [("OP", $op), ("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type), ("BF16", $bf16)]
                 }
             }
         )*
@@ -428,36 +445,51 @@ macro_rules! unary_kernels {
 }
 
 unary_kernels!(
-    (neg_float, "neg_op", "float", "float"),
-    (abs_float, "abs_op", "float", "float"),
-    (sign_float, "sign_op", "float", "float"),
-    (gelu_float, "gelu_op", "float", "float"),
-    (gelu_erf_float, "gelu_erf_op", "float", "float"),
-    (erf_float, "erf_op", "float", "float"),
-    (silu_float, "silu_op", "float", "float"),
-    (ceil_float, "ceil_op", "float", "float"),
-    (floor_float, "floor_op", "float", "float"),
-    (round_float, "round_op", "float", "float"),
-    (sqr_float, "sqr_op", "float", "float"),
-    (sqrt_float, "sqrt_op", "float", "float"),
-    (sin_float, "sin_op", "float", "float"),
-    (cos_float, "cos_op", "float", "float"),
-    (tan_float, "tan_op", "float", "float"),
-    (neg_half, "neg_op", "float", "float16_t"),
-    (abs_half, "abs_op", "float", "float16_t"),
-    (sign_half, "sign_op", "float", "float16_t"),
-    (gelu_half, "gelu_op", "float", "float16_t"),
-    (gelu_erf_half, "gelu_erf_op", "float", "float16_t"),
-    (erf_half, "erf_op", "float", "float16_t"),
-    (silu_half, "silu_op", "float", "float16_t"),
-    (ceil_half, "ceil_op", "float", "float16_t"),
-    (floor_half, "floor_op", "float", "float16_t"),
-    (round_half, "round_op", "float", "float16_t"),
-    (sqr_half, "sqr_op", "float", "float16_t"),
-    (sqrt_half, "sqrt_op", "float", "float16_t"),
-    (sin_half, "sin_op", "float", "float16_t"),
-    (cos_half, "cos_op", "float", "float16_t"),
-    (tan_half, "tan_op", "float", "float16_t"),
+    (neg_float, "neg_op", "float", "float", "0"),
+    (abs_float, "abs_op", "float", "float", "0"),
+    (sign_float, "sign_op", "float", "float", "0"),
+    (gelu_float, "gelu_op", "float", "float", "0"),
+    (gelu_erf_float, "gelu_erf_op", "float", "float", "0"),
+    (erf_float, "erf_op", "float", "float", "0"),
+    (silu_float, "silu_op", "float", "float", "0"),
+    (ceil_float, "ceil_op", "float", "float", "0"),
+    (floor_float, "floor_op", "float", "float", "0"),
+    (round_float, "round_op", "float", "float", "0"),
+    (sqr_float, "sqr_op", "float", "float", "0"),
+    (sqrt_float, "sqrt_op", "float", "float", "0"),
+    (sin_float, "sin_op", "float", "float", "0"),
+    (cos_float, "cos_op", "float", "float", "0"),
+    (tan_float, "tan_op", "float", "float", "0"),
+    (neg_half, "neg_op", "float", "float16_t", "0"),
+    (abs_half, "abs_op", "float", "float16_t", "0"),
+    (sign_half, "sign_op", "float", "float16_t", "0"),
+    (gelu_half, "gelu_op", "float", "float16_t", "0"),
+    (gelu_erf_half, "gelu_erf_op", "float", "float16_t", "0"),
+    (erf_half, "erf_op", "float", "float16_t", "0"),
+    (silu_half, "silu_op", "float", "float16_t", "0"),
+    (ceil_half, "ceil_op", "float", "float16_t", "0"),
+    (floor_half, "floor_op", "float", "float16_t", "0"),
+    (round_half, "round_op", "float", "float16_t", "0"),
+    (sqr_half, "sqr_op", "float", "float16_t", "0"),
+    (sqrt_half, "sqrt_op", "float", "float16_t", "0"),
+    (sin_half, "sin_op", "float", "float16_t", "0"),
+    (cos_half, "cos_op", "float", "float16_t", "0"),
+    (tan_half, "tan_op", "float", "float16_t", "0"),
+    (neg_bf16, "neg_op", "float", "uint16_t", "1"),
+    (abs_bf16, "abs_op", "float", "uint16_t", "1"),
+    (sign_bf16, "sign_op", "float", "uint16_t", "1"),
+    (gelu_bf16, "gelu_op", "float", "uint16_t", "1"),
+    (gelu_erf_bf16, "gelu_erf_op", "float", "uint16_t", "1"),
+    (erf_bf16, "erf_op", "float", "uint16_t", "1"),
+    (silu_bf16, "silu_op", "float", "uint16_t", "1"),
+    (ceil_bf16, "ceil_op", "float", "uint16_t", "1"),
+    (floor_bf16, "floor_op", "float", "uint16_t", "1"),
+    (round_bf16, "round_op", "float", "uint16_t", "1"),
+    (sqr_bf16, "sqr_op", "float", "uint16_t", "1"),
+    (sqrt_bf16, "sqrt_op", "float", "uint16_t", "1"),
+    (sin_bf16, "sin_op", "float", "uint16_t", "1"),
+    (cos_bf16, "cos_op", "float", "uint16_t", "1"),
+    (tan_bf16, "tan_op", "float", "uint16_t", "1"),
 );
 
 // unary_kernels!(
