@@ -62,6 +62,18 @@ void neg_op() {
     output_data[idx] = OUTER_TYPE(-INNER_TYPE(input_data[idx]));
 }
 
+void abs_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    output_data[idx] = OUTER_TYPE(abs(input_data[idx]));
+}
+
+void sign_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    output_data[idx] = OUTER_TYPE(sign(input_data[idx]));
+}
+
 void gelu_op() {
     const INNER_TYPE COEF_A = INNER_TYPE(0.79788456) + INNER_TYPE(0.000000000802865355);
     const INNER_TYPE COEF_B = INNER_TYPE(0.04471509) + INNER_TYPE(-0.0000000026068047);
@@ -133,17 +145,39 @@ void round_op() {
     output_data[idx] = OUTER_TYPE(c_round(INNER_TYPE(input_data[idx])));
 }
 
-void sign_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
-    output_data[idx] = OUTER_TYPE(sign(INNER_TYPE(input_data[idx])));
-}
-
 void sqr_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
     INNER_TYPE data = INNER_TYPE(input_data[idx]);
     output_data[idx] = OUTER_TYPE(data * data);
+}
+
+void sqrt_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    INNER_TYPE data = INNER_TYPE(input_data[idx]);
+    output_data[idx] = OUTER_TYPE(sqrt(data));
+}
+
+void sin_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    INNER_TYPE data = INNER_TYPE(input_data[idx]);
+    output_data[idx] = OUTER_TYPE(sin(data));
+}
+
+void cos_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    INNER_TYPE data = INNER_TYPE(input_data[idx]);
+    output_data[idx] = OUTER_TYPE(cos(data));
+}
+
+void tan_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    INNER_TYPE data = INNER_TYPE(input_data[idx]);
+    output_data[idx] = OUTER_TYPE(tan(data));
 }
 
 // Conditional main() selection based on the define.

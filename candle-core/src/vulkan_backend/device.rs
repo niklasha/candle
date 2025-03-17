@@ -269,6 +269,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             uniform_and_storage_buffer8_bit_access: true,
             storage_buffer16_bit_access: true,
             shader_int64: true,
+            shader_float16: true,
             ..DeviceFeatures::empty()
         };
 
