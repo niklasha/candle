@@ -1083,6 +1083,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
                 (DType::F32, DType::BF16) => "cast_f32_bf16",
                 (DType::BF16, DType::U32) => "cast_bf16_u32",
                 (DType::U32, DType::BF16) => "cast_u32_bf16",
+                (DType::BF16, DType::F16) => "cast_bf16_f16",
                 _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, dtype),
             };
             let pipeline = self
@@ -1098,6 +1099,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
         let suffix = match self.dtype {
             DType::F32 => "f32",
             DType::F16 => "f16",
+            DType::BF16 => "bf16",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let key = format!("{}_{}", B::NAME, suffix);
