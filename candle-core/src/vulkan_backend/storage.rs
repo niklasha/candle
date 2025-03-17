@@ -4,6 +4,7 @@ use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
 use std::fmt;
+use std::mem::needs_drop;
 use std::sync::Arc;
 use vulkano::acceleration_structure::CopyAccelerationStructureToMemoryInfo;
 use vulkano::buffer::{BufferContents, Subbuffer};
@@ -77,14 +78,14 @@ impl VulkanStorage {
         self.device.to_cpu(self.buffer.clone())
     }
 
-    fn execute_compute_kernel<PC: bytemuck::Pod + std::marker::Send + std::marker::Sync>(
+    fn execute_compute_kernel<PC: bytemuck::Pod + Send + Sync>(
         &self,
         pipeline: &Arc<ComputePipeline>,
         input_buffers: Vec<Subbuffer<[u8]>>,
         output_buffers: Vec<Subbuffer<[u8]>>,
-        elem_count: usize,
+        dispatch_dims: [u32; 3],
         push_constants: PC,
-        direct_dispatch: bool,
+        direct_dispatch : bool,
     ) -> Result<()> {
         let device = self.device();
 
@@ -93,9 +94,8 @@ impl VulkanStorage {
             device.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
-        .map_err(VulkanError::ValidatedVulkanError)?;
+            .map_err(VulkanError::ValidatedVulkanError)?;
 
-        // Bind pipeline and descriptors
         let offset = input_buffers.len();
         let bindings = input_buffers
             .into_iter()
@@ -109,6 +109,11 @@ impl VulkanStorage {
             )
             .collect::<Vec<_>>();
 
+        let dims = if direct_dispatch {
+            dispatch_dims
+        } else {
+            [(dispatch_dims[0] + 255) / 256, dispatch_dims[1], dispatch_dims[2]]
+        };
         unsafe {
             builder
                 .bind_pipeline_compute(pipeline.clone())
@@ -123,20 +128,12 @@ impl VulkanStorage {
                         bindings,
                         [],
                     )
-                    .map_err(VulkanError::ValidatedVulkanError)?,
+                        .map_err(VulkanError::ValidatedVulkanError)?,
                 )
                 .map_err(VulkanError::ValidationError)?
                 .push_constants(pipeline.layout().clone(), 0, push_constants)
                 .map_err(VulkanError::ValidationError)?
-                .dispatch([
-                    if direct_dispatch {
-                        elem_count as u32
-                    } else {
-                        (elem_count as u32 + 255) / 256
-                    },
-                    1,
-                    1,
-                ])
+                .dispatch(dims)
                 .map_err(|e| VulkanError::ValidationError(e.into()))?;
         }
 
@@ -223,7 +220,7 @@ impl VulkanStorage {
                 pipeline,
                 vec![buffer],
                 vec![(*new_storage.buffer).clone().unwrap()],
-                elem_count,
+                [elem_count as u32, 1, 1],
                 push_constants,
                 false,
             )?;
@@ -320,7 +317,7 @@ impl VulkanStorage {
                 pipeline,
                 vec![lhs_buffer, rhs_buffer],
                 vec![(*new_storage.buffer).clone().unwrap()],
-                elem_count,
+                [elem_count as u32, 1, 1],
                 push_constants,
                 false,
             )?;
@@ -443,7 +440,7 @@ impl VulkanStorage {
                     (*partial_values.buffer).clone().unwrap(),
                     (*partial_indices.buffer).clone().unwrap(),
                 ],
-                total_workgroups as usize,
+                [total_workgroups, 1, 1],
                 push_constants,
                 true,
             )?;
@@ -469,7 +466,7 @@ impl VulkanStorage {
                         (*final_values.buffer).clone().unwrap(),
                         (*final_indices.buffer).clone().unwrap(),
                     ],
-                    num_batches as usize,
+                    [num_batches, 1, 1],
                     combine_constants,
                     true,
                 )?;
@@ -777,7 +774,7 @@ impl VulkanStorage {
                 pipeline,
                 vec![lhs_buffer, rhs_buffer],
                 vec![dst_buffer],
-                elem_count,
+                [elem_count as u32, 1, 1],
                 push_constants,
                 false,
             )?;
@@ -810,20 +807,17 @@ impl VulkanStorage {
             let arg0 = arg0 as f32;
             let arg1 = arg1 as f32;
 
-            let push_constants = PushConstants {
-                seed,
-                arg0,
-                arg1,
-            };
+            let push_constants = PushConstants { seed, arg0, arg1 };
             self.execute_compute_kernel(
                 pipeline,
                 vec![],
                 vec![(*new_storage.buffer).clone().unwrap()],
-                elem_count,
+                [elem_count as u32, 1, 1],
                 push_constants,
                 false,
             )?;
-            self.device.set_seed(pcg32_advance(seed, elem_count as u64))?;
+            self.device
+                .set_seed(pcg32_advance(seed, elem_count as u64))?;
 
             Ok(new_storage)
         } else {
@@ -831,11 +825,96 @@ impl VulkanStorage {
             Ok(self.clone())
         }
     }
+
+    pub fn gemm_impl(
+        &self,
+        rhs: &Self,
+        dst: &Self,
+        layout: &Layout,
+        rhs_layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+        (b, m, n, k): (usize, usize, usize, usize),
+    ) -> Result<()> {
+        // Build a push constant struct for GEMM.
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+        struct GemmPushConstants {
+            m: u32,
+            n: u32,
+            k: u32,
+            a_batch_stride: u32, // physical batch stride for A
+            a_row_stride: u32,   // physical row stride for A
+            a_col_stride: u32,   // physical column stride for A
+            b_batch_stride: u32, // physical batch stride for B
+            b_row_stride: u32,   // physical row stride for B
+            b_col_stride: u32,   // physical column stride for B
+            ldc: u32,
+            alpha: f32,
+            beta: f32,
+        }
+
+        if let (Some(lhs_buffer), Some(rhs_buffer)) = (
+            (*self.buffer).clone(),
+            (*rhs.buffer).clone(),
+        ) {
+            let (b, m, n, k) = (b as u32, m as u32, n as u32, k as u32);
+            // Extract physical strides from the Layouts.
+            // For A: assume shape is [b, m, k] so:
+            //   a_batch_stride = lhs_l.stride()[0]
+            //   a_row_stride   = lhs_l.stride()[lhs_l.shape().rank() - 2]
+            //   a_col_stride   = lhs_l.stride()[lhs_l.shape().rank() - 1]
+            let a_rank = layout.shape().rank();
+            let a_batch_stride = layout.stride()[0] as u32;
+            let a_row_stride = layout.stride()[a_rank - 2] as u32;
+            let a_col_stride = layout.stride()[a_rank - 1] as u32;
+
+            // Similarly for B: assume shape is [b, k, n]:
+            let b_rank = rhs_layout.shape().rank();
+            let b_batch_stride = rhs_layout.stride()[0] as u32;
+            let b_row_stride = rhs_layout.stride()[b_rank - 2] as u32;
+            let b_col_stride = rhs_layout.stride()[b_rank - 1] as u32;
+
+            // For C, assume it’s allocated contiguously with shape [b, m, n],
+            // so the logical row stride is n, and batch stride would be m * n.
+            let ldc = n; // each row of C has n elements
+
+            // Build the push constants.
+            let push_constants = GemmPushConstants {
+                m,
+                n,
+                k,
+                a_batch_stride,
+                a_row_stride,
+                a_col_stride,
+                b_batch_stride,
+                b_row_stride,
+                b_col_stride,
+                ldc,
+                alpha: 1f32,
+                beta: 0f32,
+            };
+
+            let tile_size = 16u32;
+            let wg_x = (n + tile_size - 1) / tile_size;
+            let wg_y = (m + tile_size - 1) / tile_size;
+            let wg_z = b;
+
+            self.execute_compute_kernel(
+                pipeline,
+                vec![lhs_buffer, rhs_buffer],
+                vec![(*dst.buffer).clone().unwrap()],
+                [wg_x, wg_y, wg_z],
+                push_constants,
+                true,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 // PCG32 constants for 64-bit state
 const PCG_MULTIPLIER: u64 = 6364136223846793005u64;
-const PCG_INCREMENT: u64  = 1442695040888963407u64;
+const PCG_INCREMENT: u64 = 1442695040888963407u64;
 
 fn pcg32_advance(state: u64, delta: u64) -> u64 {
     let mut acc_mult = 1u64;
@@ -1000,6 +1079,10 @@ impl crate::backend::BackendStorage for VulkanStorage {
                 (DType::U32, DType::F32) => "cast_u32_f32",
                 (DType::U32, DType::U8) => "cast_u32_u8",
                 (DType::U8, DType::F32) => "cast_u8_f32",
+                (DType::BF16, DType::F32) => "cast_bf16_f32",
+                (DType::F32, DType::BF16) => "cast_f32_bf16",
+                (DType::BF16, DType::U32) => "cast_bf16_u32",
+                (DType::U32, DType::BF16) => "cast_u32_bf16",
                 _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, dtype),
             };
             let pipeline = self
@@ -1140,12 +1223,32 @@ impl crate::backend::BackendStorage for VulkanStorage {
 
     fn matmul(
         &self,
-        _: &Self,
-        _: (usize, usize, usize, usize),
-        _: &Layout,
-        _: &Layout,
+        rhs: &Self,
+        (b, m, n, k): (usize, usize, usize, usize),
+        lhs_l: &Layout,
+        rhs_l: &Layout,
     ) -> Result<Self> {
-        fail!()
+        let suffix = match (self.dtype, rhs.dtype) {
+            (DType::F32, DType::F32) => "f32",
+            (DType::BF16, DType::BF16) => "bf16",
+            _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, rhs.dtype),
+        };
+        let key = format!("gemm_{}", suffix);
+        // Load the GEMM compute pipeline.
+        // The pipeline key (e.g. "gemm_f32") must refer to a shader that implements:
+        //   C = alpha * (A x B) + beta * C
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
+
+        let shape = Shape::from(&[b, m, n]);
+        let dst = unsafe { self.device().zeros_impl(&shape, self.dtype())? };
+
+        self.gemm_impl(rhs, &dst, lhs_l, rhs_l, &pipeline, (b, m, n, k))?;
+
+        Ok(dst)
     }
 
     fn copy_strided_src(&self, dst: &mut Self, dst_offset: usize, layout: &Layout) -> Result<()> {
@@ -1215,6 +1318,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
     ) -> Result<()> {
         let suffix = match self.dtype {
             DType::F32 => "f32",
+            DType::U32 => "u32",
             DType::I64 => "i64",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
@@ -1252,3 +1356,4 @@ impl crate::backend::BackendStorage for VulkanStorage {
         self.copy_op_impl(dst, push_constants, [dispatch_x, dispatch_y, 1], &pipeline)
     }
 }
+

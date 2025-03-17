@@ -5,10 +5,17 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float: enable
 
+#if SRC_BF16
+    #define CAST(x) uintBitsToFloat(uint(x) << 16u)
+#endif
+#if DST_BF16
+    #define CAST(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+#endif
 #if NEED_UINT_CAST
     #define CAST(x) uint(x)
-#else
-    #define CAST(x) x
+#endif
+#ifndef CAST
+    #define CAST(x) (x)
 #endif
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
