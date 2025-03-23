@@ -248,6 +248,7 @@ impl Kernels {
         kernels.insert("cast_bf16_u32".to_string(), bf16_to_uint::load(device.clone())?);
         kernels.insert("cast_u32_bf16".to_string(), uint_to_bf16::load(device.clone())?);
         kernels.insert("cast_bf16_f16".to_string(), bf16_to_half::load(device.clone())?);
+        kernels.insert("cast_u32_i64".to_string(), uint_to_int64_t::load(device.clone())?);
 
         kernels.insert("neg_f32".to_string(), neg_float::load(device.clone())?);
         kernels.insert("abs_f32".to_string(), abs_float::load(device.clone())?);
@@ -325,6 +326,25 @@ impl Kernels {
 
         kernels.insert ("affine_f32".to_string(), affine_float::load(device.clone())?);
         kernels.insert ("elu_f32".to_string(), elu_float::load(device.clone())?);
+
+        kernels.insert ("index_select_u8_u8".to_string(), index_select_uint8_t_uint8_t::load(device.clone())?);
+        kernels.insert ("index_select_u8_u32".to_string(), index_select_uint8_t_uint::load(device.clone())?);
+        kernels.insert ("index_select_u8_i64".to_string(), index_select_uint8_t_int64_t::load(device.clone())?);
+        kernels.insert ("index_select_u8_bf16".to_string(), index_select_uint8_t_bf16::load(device.clone())?);
+        kernels.insert ("index_select_u8_f32".to_string(),  index_select_uint8_t_float::load(device.clone())?);
+        //kernels.insert ("index_select_u8_f16".to_string(), index_select_uint8_t_half::load(device.clone())?);
+        kernels.insert ("index_select_u32_u8".to_string(), index_select_uint_uint8_t::load(device.clone())?);
+        kernels.insert ("index_select_u32_u32".to_string(), index_select_uint_uint::load(device.clone())?);
+        kernels.insert ("index_select_u32_i64".to_string(), index_select_uint_int64_t::load(device.clone())?);
+        kernels.insert ("index_select_u32_bf16".to_string(), index_select_uint_bf16::load(device.clone())?);
+        kernels.insert ("index_select_u32_f32".to_string(), index_select_uint_float::load(device.clone())?);
+        //kernels.insert ("index_select_u32_f16".to_string(), index_select_uint_half::load(device.clone())?);
+        kernels.insert ("index_select_i64_u8".to_string(), index_select_int64_t_uint8_t::load(device.clone())?);
+        kernels.insert ("index_select_i64_u32".to_string(), index_select_int64_t_uint::load(device.clone())?);
+        kernels.insert ("index_select_i64_i64".to_string(), index_select_int64_t_int64_t::load(device.clone())?);
+        kernels.insert ("index_select_i64_bf16".to_string(), index_select_int64_t_bf16::load(device.clone())?);
+        kernels.insert ("index_select_i64_f32".to_string(), index_select_int64_t_float::load(device.clone())?);
+        //kernels.insert ("index_select_i64_f16".to_string(), index_select_int64_t_half::load(device.clone())?);
 
         kernels.insert ("copy2d_f32".to_string(), copy2d_float::load(device.clone())?);
         kernels.insert ("copy2d_u32".to_string(), copy2d_uint::load(device.clone())?);
@@ -428,6 +448,7 @@ cast_kernels!(
     (bf16_to_uint, "uint16_t", "uint", "0", "1", "0"),
     (uint_to_bf16, "uint", "uint16_t", "0", "0", "1"),
     (bf16_to_half, "uint16_t", "float16_t", "0", "1", "0"),
+    (uint_to_int64_t, "uint", "int64_t", "0", "0", "0"),
 );
 
 macro_rules! unary_kernels {
@@ -598,6 +619,41 @@ macro_rules! affine_elu_kernels {
 affine_elu_kernels!(
     (affine_float, "affine_op"),
     (elu_float, "elu_op"),
+);
+
+macro_rules! index_select_kernels {
+    ($( ($mod:ident, $idx_ty:literal, $ty:literal, $bf16:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/index_select.comp",
+                    define: [("TYPE", $ty), ("IDX_TYPE", $idx_ty), ("BF16", $bf16)]
+                }
+            }
+        )*
+    }
+}
+
+index_select_kernels!(
+    (index_select_uint8_t_uint8_t, "uint8_t", "uint8_t", "0"),
+    (index_select_uint8_t_uint, "uint8_t", "uint", "0"),
+    (index_select_uint8_t_int64_t, "uint8_t", "int64_t", "0"),
+    (index_select_uint8_t_bf16, "uint8_t", "float", "1"),
+    (index_select_uint8_t_float, "uint8_t", "float", "0"),
+//    (index_select_uint8_t_half, "uint8_t", "half", "0"),
+    (index_select_uint_uint8_t, "uint", "uint8_t", "0"),
+    (index_select_uint_uint, "uint", "uint", "0"),
+    (index_select_uint_int64_t, "uint", "int64_t", "0"),
+    (index_select_uint_bf16, "uint", "float", "1"),
+    (index_select_uint_float, "uint", "float", "0"),
+//    (index_select_uint_half, "uint", "half", "0"),
+    (index_select_int64_t_uint8_t, "int64_t", "uint8_t", "0"),
+    (index_select_int64_t_uint, "int64_t", "uint", "0"),
+    (index_select_int64_t_int64_t, "int64_t", "int64_t", "0"),
+    (index_select_int64_t_bf16, "int64_t", "float", "1"),
+    (index_select_int64_t_float, "int64_t", "float", "0"),
+//    (index_select_int64_t_half, "int64_t", "half", "0"),
 );
 
 macro_rules! copy2d_shaders {
