@@ -85,7 +85,7 @@ impl VulkanStorage {
         output_buffers: Vec<Subbuffer<[u8]>>,
         dispatch_dims: [u32; 3],
         push_constants: PC,
-        direct_dispatch : bool,
+        direct_dispatch: bool,
     ) -> Result<()> {
         let device = self.device();
 
@@ -94,7 +94,7 @@ impl VulkanStorage {
             device.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
-            .map_err(VulkanError::ValidatedVulkanError)?;
+        .map_err(VulkanError::ValidatedVulkanError)?;
 
         let offset = input_buffers.len();
         let bindings = input_buffers
@@ -112,7 +112,11 @@ impl VulkanStorage {
         let dims = if direct_dispatch {
             dispatch_dims
         } else {
-            [(dispatch_dims[0] + 255) / 256, dispatch_dims[1], dispatch_dims[2]]
+            [
+                (dispatch_dims[0] + 255) / 256,
+                dispatch_dims[1],
+                dispatch_dims[2],
+            ]
         };
         unsafe {
             builder
@@ -128,7 +132,7 @@ impl VulkanStorage {
                         bindings,
                         [],
                     )
-                        .map_err(VulkanError::ValidatedVulkanError)?,
+                    .map_err(VulkanError::ValidatedVulkanError)?,
                 )
                 .map_err(VulkanError::ValidationError)?
                 .push_constants(pipeline.layout().clone(), 0, push_constants)
@@ -613,6 +617,100 @@ impl VulkanStorage {
         Ok(new_storage)
     }
 
+    fn index_select_op_impl(
+        &self,
+        dst: &Self,
+        index: &Self,
+        src_layout: &Layout,
+        index_layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+        dim: usize,
+    ) -> Result<Self> {
+        // Ensure that the buffers exist.
+        if let (Some(src_buffer), Some(index_buffer), Some(dst_buffer)) = (
+            (*self.buffer).clone(),
+            (*index.buffer).clone(),
+            (*dst.buffer).clone(),
+        ) {
+            // Push constant struct matching the shader.
+            #[repr(C)]
+            #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+            struct IndexSelectPushConstants {
+                total_out_elems: u32, // total number of output elements
+                rank: u32,            // rank of the tensor
+                selected_dim: u32,    // the dimension to select over
+                _pad0: u32,
+                input_strides: [u32; 4],  // input strides (row-major), padded
+                output_strides: [u32; 4], // output strides, padded
+            }
+
+            // Get the input shape and strides from the source layout.
+            let src_shape: Vec<usize> = src_layout.shape().dims().to_vec();
+            let rank = src_shape.len();
+            let input_strides: Vec<u32> = src_layout.stride().iter().map(|&s| s as u32).collect();
+
+            // Compute the output shape by replacing the selected dimension with the index tensor's length.
+            let mut out_shape = src_shape.clone();
+            out_shape[dim] = index_layout.shape().dim(0)?;
+            // Total number of output elements:
+            let total_out_elems: u32 = out_shape.iter().map(|&d| d as u32).product();
+
+            // Compute output strides in row-major order.
+            // For a shape [s0, s1, ..., s_{R-1}], row-major strides are:
+            // stride[R-1] = 1; stride[i] = stride[i+1] * s[i+1]
+            let mut output_strides: Vec<u32> = vec![0; rank];
+            if rank > 0 {
+                output_strides[rank - 1] = 1;
+                for i in (0..rank - 1).rev() {
+                    output_strides[i] = output_strides[i + 1] * (out_shape[i + 1] as u32);
+                }
+            }
+
+            // Pad the strides to 4 elements (assuming rank <= 4).
+            let mut padded_input_strides = input_strides.clone();
+            padded_input_strides.resize(4, 0);
+            let mut padded_output_strides = output_strides.clone();
+            padded_output_strides.resize(4, 0);
+
+            let push_constants = IndexSelectPushConstants {
+                total_out_elems,
+                rank: rank as u32,
+                selected_dim: dim as u32,
+                _pad0: 0,
+                input_strides: [
+                    padded_input_strides[0],
+                    padded_input_strides[1],
+                    padded_input_strides[2],
+                    padded_input_strides[3],
+                ],
+                output_strides: [
+                    padded_output_strides[0],
+                    padded_output_strides[1],
+                    padded_output_strides[2],
+                    padded_output_strides[3],
+                ],
+            };
+
+            // We'll dispatch 1D: one thread per output element.
+            // Each workgroup has 256 threads.
+            let dispatch_x = (total_out_elems + 255) / 256;
+            let dispatch_dims = [dispatch_x, 1, 1];
+
+            self.execute_compute_kernel(
+                pipeline,
+                vec![src_buffer, index_buffer], // binding 0: source, binding 1: indices
+                vec![dst_buffer],
+                dispatch_dims,
+                push_constants,
+                true, // direct_dispatch true (we computed global size directly)
+            )?;
+
+            Ok(dst.clone())
+        } else {
+            Ok(self.clone())
+        }
+    }
+
     /// Generic copy_op_impl helper.
     ///
     /// This function dispatches a compute kernel using a prebuilt pipeline.
@@ -811,7 +909,7 @@ impl VulkanStorage {
             self.execute_compute_kernel(
                 pipeline,
                 vec![],
-                vec![(*new_storage.buffer).clone().unwrap()],
+                vec![(*new_storage.buffer).clone().unwrap()], // XXX
                 [elem_count as u32, 1, 1],
                 push_constants,
                 false,
@@ -853,10 +951,9 @@ impl VulkanStorage {
             beta: f32,
         }
 
-        if let (Some(lhs_buffer), Some(rhs_buffer)) = (
-            (*self.buffer).clone(),
-            (*rhs.buffer).clone(),
-        ) {
+        if let (Some(lhs_buffer), Some(rhs_buffer)) =
+            ((*self.buffer).clone(), (*rhs.buffer).clone())
+        {
             let (b, m, n, k) = (b as u32, m as u32, n as u32, k as u32);
             // Extract physical strides from the Layouts.
             // For A: assume shape is [b, m, k] so:
@@ -1084,6 +1181,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
                 (DType::BF16, DType::U32) => "cast_bf16_u32",
                 (DType::U32, DType::BF16) => "cast_u32_bf16",
                 (DType::BF16, DType::F16) => "cast_bf16_f16",
+                (DType::U32, DType::I64) => "cast_u32_i64",
                 _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, dtype),
             };
             let pipeline = self
@@ -1219,8 +1317,62 @@ impl crate::backend::BackendStorage for VulkanStorage {
         fail!()
     }
 
-    fn index_select(&self, _: &Self, _: &Layout, _: &Layout, _: usize) -> Result<Self> {
-        fail!()
+    fn index_select(
+        &self,
+        ids: &Self,
+        src_layout: &Layout,
+        ids_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        if !ids_layout.is_contiguous() {
+            crate::bail!("Vulkan index_select requires contiguous ids")
+        }
+        let device = self.device();
+        let mut dst_shape = src_layout.shape().dims().to_owned();
+        if dim >= dst_shape.len() {
+            Err(VulkanError::Message(format!(
+                "dim {} out of bounds for shape {:?}",
+                dim, dst_shape
+            )))?;
+        }
+        let new_dim_size = ids_layout.shape().dim(0)?;
+        dst_shape[dim] = new_dim_size;
+        let dst = unsafe { device.alloc_uninit(&dst_shape.into(), self.dtype)? };
+
+        let suffix = match (ids.dtype, self.dtype) {
+            (DType::U8, DType::U8) => "u8_u8",
+            (DType::U8, DType::U32) => "u8_u32",
+            (DType::U8, DType::I64) => "u8_i64",
+            (DType::U8, DType::BF16) => "u8_bf16",
+            (DType::U8, DType::F32) => "u8_f32",
+            (DType::U8, DType::F16) => "u8_f16",
+
+            (DType::U32, DType::U8) => "u32_u8",
+            (DType::U32, DType::U32) => "u32_u32",
+            (DType::U32, DType::I64) => "u32_i64",
+            (DType::U32, DType::F32) => "u32_f32",
+            (DType::U32, DType::F16) => "u32_f16",
+            (DType::U32, DType::BF16) => "u32_bf16",
+
+            (DType::I64, DType::U8) => "i64_u8",
+            (DType::I64, DType::U32) => "i64_u32",
+            (DType::I64, DType::I64) => "i64_i64",
+            (DType::I64, DType::F32) => "i64_f32",
+            (DType::I64, DType::F16) => "i64_f16",
+            (DType::I64, DType::BF16) => "i64_bf16",
+
+            (left, right) => {
+                crate::bail!("Vulkan contiguous index_select {left:?} {right:?} not implemented")
+            }
+        };
+        let key = format!("index_select_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
+
+        self.index_select_op_impl(&dst, ids, src_layout, ids_layout, &pipeline, dim)
     }
 
     fn index_add(
@@ -1374,4 +1526,3 @@ impl crate::backend::BackendStorage for VulkanStorage {
         fail!()
     }
 }
-
