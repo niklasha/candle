@@ -1,0 +1,62 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_AMD_gpu_shader_half_float: enable
+
+// We'll use a 1D workgroup so that each invocation processes one output element.
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer Input {
+    TYPE input_data[];
+};
+layout(set = 0, binding = 1) buffer Indices {
+    IDX_TYPE index_data[];
+};
+layout(set = 0, binding = 2) buffer Output {
+    TYPE output_data[];
+};
+
+//
+// Push constants (to be computed on the host):
+//  - total_out_elems: total number of output elements.
+//  - rank: the tensor rank (same as input rank)
+//  - selected_dim: the dimension along which we index.
+//  - input_strides: the strides for each dimension in the input tensor.
+//  - output_strides: the strides for the output tensor (which is contiguous and its shape
+//    equals the input shape with dimension `selected_dim` replaced by index_array.length).
+//
+layout(push_constant) uniform PushConstants {
+    uint total_out_elems;
+    uint rank;
+    uint selected_dim;
+    // For simplicity we assume rank ≤ 4.
+    uvec4 input_strides;
+    uvec4 output_strides;
+} pc;
+
+void main() {
+    uint linear_idx = gl_GlobalInvocationID.x;
+    if (linear_idx >= pc.total_out_elems) return;
+
+    // Decode the output coordinate vector from the linear index.
+    // We assume the output tensor is stored in row-major order.
+    uint remaining = linear_idx;
+    // We'll compute the input linear index as we go.
+    uint input_linear = 0;
+
+    // Loop over dimensions.
+    // For each dimension d, we decode the output coordinate "c" along that dimension.
+    for (uint d = 0u; d < pc.rank; d++) {
+        // c is the coordinate along dimension d.
+        uint c = remaining / pc.output_strides[d];
+        remaining = remaining % pc.output_strides[d];
+        // For input, if this is the selected dimension, we substitute with the index value.
+        uint in_coord = (d == pc.selected_dim ? uint(index_data[c]) : c);
+        input_linear += in_coord * pc.input_strides[d];
+    }
+
+    output_data[linear_idx] = input_data[input_linear];
+}
