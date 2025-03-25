@@ -1243,6 +1243,65 @@ impl VulkanStorage {
         Ok(new_storage)
     }
 
+    pub fn rmsnorm_op_impl(
+        &self,
+        layout: &Layout,
+        gamma: &VulkanStorage,
+        gamma_layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+        axis: usize,
+        eps: f32,
+    ) -> Result<Self> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            base_offset: u32,
+            rank: u32,
+            axis: u32,
+            eps: f32,
+            shape: [u32; 4],
+            stride: [u32; 4],
+        }
+
+        let shape = layout.shape();
+        let stride = layout.stride();
+        let mut shape_arr = [1u32; 4];
+        let mut stride_arr = [1u32; 4];
+        for i in 0..shape.rank().min(4) {
+            shape_arr[i] = shape.dim(i).unwrap() as u32;
+        }
+        for i in 0..stride.len().min(4) {
+            stride_arr[i] = stride[i] as u32;
+        }
+
+        let push_constants = PushConstants {
+            base_offset: layout.start_offset() as u32,
+            rank: shape.rank() as u32,
+            axis: axis as u32,
+            eps: eps,
+            shape: shape_arr,
+            stride: stride_arr,
+        };
+
+        let device = self.device();
+        let output = unsafe { device.alloc_uninit(shape, self.dtype)? };
+        let count = shape.elem_count();
+
+        self.execute_compute_kernel(
+            pipeline,
+            vec![
+                (*self.buffer).clone().unwrap(),
+                (*gamma.buffer).clone().unwrap(),
+            ],
+            vec![(*output.buffer).clone().unwrap()],
+            [((count as u32) / shape.dims()[axis] as u32), 1, 1],
+            push_constants,
+            true,
+        )?;
+
+        Ok(output)
+    }
+
     pub fn random_impl(
         &self,
         shape: &Shape,
