@@ -262,6 +262,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
 
         // Initialize Vulkan resources (queues, command buffers, etc.)
         let device_extensions = DeviceExtensions {
+            ext_shader_atomic_float: true,
             khr_storage_buffer_storage_class: true,
             ..DeviceExtensions::empty()
         };
@@ -270,6 +271,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             storage_buffer16_bit_access: true,
             shader_int64: true,
             shader_float16: true,
+            shader_buffer_float32_atomic_add: true,
             ..DeviceFeatures::empty()
         };
 
