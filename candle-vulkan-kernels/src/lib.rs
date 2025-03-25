@@ -421,6 +421,7 @@ impl Kernels {
         kernels.insert ("copy_strided_src_f32".to_string(), copy_strided_src_float::load(device.clone())?);
         kernels.insert ("copy_strided_src_u32".to_string(), copy_strided_src_uint::load(device.clone())?);
         kernels.insert ("copy_strided_src_i64".to_string(), copy_strided_src_int64_t::load(device.clone())?);
+        kernels.insert ("copy_strided_src_bf16".to_string(), copy_strided_src_bf16::load(device.clone())?);
 
         kernels.insert ("eq_f32".to_string(), eq_float::load(device.clone())?);
         kernels.insert ("ne_f32".to_string(), ne_float::load(device.clone())?);
@@ -896,6 +897,7 @@ copy_strided_src_kernels!(
     (copy_strided_src_float, "float"),
     (copy_strided_src_uint, "uint"),
     (copy_strided_src_int64_t, "int64_t"),
+    (copy_strided_src_bf16, "uint16_t"),
 );
 
 macro_rules! cmp_kernels {
