@@ -1,0 +1,92 @@
+#version 450
+
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_AMD_gpu_shader_half_float : enable
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Input values
+layout(set = 0, binding = 0) readonly buffer Input {
+    TYPE input_data[];
+};
+
+// Output indices
+layout(set = 0, binding = 1) writeonly buffer Output {
+    uint output_indices[];
+};
+
+// Parameters
+layout(push_constant) uniform PushConstants {
+    uint nrows;
+    uint ncols;
+    uint ncols_pad;
+    uint ascending;
+} pc;
+
+shared uint shared_indices[1024]; // assumes ncols_pad <= 1024
+
+void main() {
+    uint col = gl_LocalInvocationID.x;
+    uint row = gl_WorkGroupID.x;
+
+    if (col >= pc.ncols_pad) return;
+
+    uint global_idx = row * pc.ncols + col;
+    bool sort_ascending = (pc.ascending != 0u);
+
+    // Load initial indices
+    shared_indices[col] = col;
+
+    memoryBarrierShared();
+    barrier();
+
+    // Bitonic sort
+    for (uint k = 2u; k <= pc.ncols_pad; k *= 2u) {
+        for (uint j = k / 2u; j >= 1u; j /= 2u) {
+            uint ixj = col ^ j;
+            if (ixj > col && ixj < pc.ncols_pad) {
+                bool bitonic_ascending = ((col & k) == 0u);
+
+                uint i1 = shared_indices[col];
+                uint i2 = shared_indices[ixj];
+
+                // Read values
+                TYPE v1 = i1 < pc.ncols ? input_data[row * pc.ncols + i1] : TYPE(0);
+                TYPE v2 = i2 < pc.ncols ? input_data[row * pc.ncols + i2] : TYPE(0);
+
+                bool swap;
+                if (i1 >= pc.ncols) {
+                    swap = bitonic_ascending;
+                } else if (i2 >= pc.ncols) {
+                    swap = !bitonic_ascending;
+                } else {
+                    swap = bitonic_ascending ? (v1 > v2) : (v1 < v2);
+
+                    // Flip direction based on global sort order
+                    if (!sort_ascending) {
+                        swap = !swap;
+                    }
+                }
+
+                if (swap) {
+                    uint tmp = shared_indices[col];
+                    shared_indices[col] = shared_indices[ixj];
+                    shared_indices[ixj] = tmp;
+                }
+            }
+
+            memoryBarrierShared();
+            barrier();
+        }
+    }
+
+    // Write output
+    if (col < pc.ncols) {
+        output_indices[row * pc.ncols + col] = shared_indices[col];
+    }
+}
