@@ -1,0 +1,52 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_AMD_gpu_shader_half_float : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer Input {
+    TYPE input_data[];
+};
+layout(set = 0, binding = 1) buffer Indices {
+    IDX_TYPE index_data[];
+};
+layout(set = 0, binding = 2) buffer Output {
+    TYPE output_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint total_out_elems;
+    uint rank;
+    uint selected_dim;
+    uvec4 input_strides;
+    uvec4 output_strides;
+};
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= total_out_elems) return;
+
+    // Decode output coordinate
+    uvec4 coord = uvec4(0);
+    uint rem = gid;
+    for (uint d = 0; d < rank; ++d) {
+        coord[d] = rem / output_strides[d];
+        rem %= output_strides[d];
+    }
+
+    // Gather index from index_data[gid]
+    uint idx = uint(index_data[gid]);
+    coord[selected_dim] = idx;
+
+    // Compute input linear index
+    uint input_idx = 0;
+    for (uint d = 0; d < rank; ++d) {
+        input_idx += coord[d] * input_strides[d];
+    }
+
+    output_data[gid] = input_data[input_idx];
+}
