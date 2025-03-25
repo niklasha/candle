@@ -4,14 +4,12 @@ use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
 use std::fmt;
-use std::mem::needs_drop;
 use std::sync::Arc;
-use vulkano::acceleration_structure::CopyAccelerationStructureToMemoryInfo;
 use vulkano::buffer::{BufferContents, Subbuffer};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract,
 };
-use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet, WriteDescriptorSetElements};
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::device::DeviceOwned;
 use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint};
 use vulkano::sync::GpuFuture;
