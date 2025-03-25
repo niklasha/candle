@@ -3,6 +3,7 @@
 
 use candle::{CpuStorage, DType, Layout, Module, Result, Shape, Tensor, D};
 use rayon::prelude::*;
+use candle::backend::BackendStorage;
 
 /// Applies the softmax function to the input tensor, rescaling the element so that elements on
 /// a slice of fixed index on dimension `dim` are between 0 and 1 and sum to 1.
@@ -226,6 +227,28 @@ impl candle::CustomOp1 for Sigmoid {
 
         let new_storage = candle::MetalStorage::new(buffer, device.clone(), el_count, dtype);
         Ok((new_storage, layout.shape().clone()))
+    }
+
+    #[cfg(feature = "vulkan")]
+    fn vulkan_fwd(
+        &self,
+        storage: &candle::VulkanStorage,
+        layout: &Layout,
+    ) -> Result<(candle::VulkanStorage, Shape)> {
+        let dtype = storage.dtype();
+        let kernel = match dtype {
+            DType::F32 => "sigmoid_f32",
+            DType::F16 => "sigmoid_f16",
+            DType::BF16 => "sigmoid_bf16",
+            _ => candle::bail!("sigmoid: unsupported dtype {dtype:?}"),
+        };
+        let device = storage.device();
+        let pipeline = device
+            .kernels()
+            .load_pipeline(device.device(), kernel)
+            .map_err(candle::Error::wrap)?;
+        let out = storage.unary_op_impl(layout, &pipeline, dtype)?;
+        Ok((out, layout.shape().clone()))
     }
 
     fn bwd(&self, _arg: &Tensor, res: &Tensor, grad_res: &Tensor) -> Result<Option<Tensor>> {
