@@ -67,19 +67,19 @@ uint get_strided_index(uint lin_idx) {
 void neg_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    output_data[idx] = CAST_OUT(-CAST_IN(input_data[idx]));
+    output_data[idx] = CAST_OUT(-CAST_IN(input_data[a_idx]));
 }
 
 void abs_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    output_data[idx] = CAST_OUT(abs(CAST_IN(input_data[idx])));
+    output_data[idx] = CAST_OUT(abs(CAST_IN(input_data[a_idx])));
 }
 
 void sign_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    output_data[idx] = CAST_OUT(sign(CAST_IN(input_data[idx])));
+    output_data[idx] = CAST_OUT(sign(CAST_IN(input_data[a_idx])));
 }
 
 void gelu_op() {
@@ -87,7 +87,7 @@ void gelu_op() {
     const INNER_TYPE COEF_B = INNER_TYPE(0.04471509) + INNER_TYPE(-0.0000000026068047);
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE x = CAST_IN(input_data[idx]);
+    INNER_TYPE x = CAST_IN(input_data[a_idx]);
     INNER_TYPE x_cubed = x * x * x;
     INNER_TYPE inner = COEF_A * (x + COEF_B * x_cubed);
     INNER_TYPE cdf = HALF * (ONE + tanh(inner));
@@ -112,7 +112,7 @@ INNER_TYPE erf_approx(INNER_TYPE x) {
 void gelu_erf_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE x = CAST_IN(input_data[idx]);
+    INNER_TYPE x = CAST_IN(input_data[a_idx]);
     INNER_TYPE cdf = HALF * (ONE + erf_approx(x / sqrt(2.0)));
     output_data[idx] = CAST_OUT(x * cdf);
 }
@@ -120,27 +120,27 @@ void gelu_erf_op() {
 void erf_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE x = CAST_IN(input_data[idx]);
+    INNER_TYPE x = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(erf_approx(x));
 }
 
 void silu_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE x = CAST_IN(input_data[idx]);
+    INNER_TYPE x = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(x / (ONE + exp(-x)));
 }
 
 void ceil_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    output_data[idx] = CAST_OUT(ceil(CAST_IN(input_data[idx])));
+    output_data[idx] = CAST_OUT(ceil(CAST_IN(input_data[a_idx])));
 }
 
 void floor_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    output_data[idx] = CAST_OUT(floor(CAST_IN(input_data[idx])));
+    output_data[idx] = CAST_OUT(floor(CAST_IN(input_data[a_idx])));
 }
 
 float c_round(float x) {
@@ -150,41 +150,41 @@ float c_round(float x) {
 void round_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    output_data[idx] = CAST_OUT(c_round(CAST_IN(input_data[idx])));
+    output_data[idx] = CAST_OUT(c_round(CAST_IN(input_data[a_idx])));
 }
 
 void sqr_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE data = CAST_IN(input_data[idx]);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(data * data);
 }
 
 void sqrt_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE data = CAST_IN(input_data[idx]);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(sqrt(data));
 }
 
 void sin_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE data = CAST_IN(input_data[idx]);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(sin(data));
 }
 
 void cos_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE data = CAST_IN(input_data[idx]);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(cos(data));
 }
 
 void tan_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
-    INNER_TYPE data = CAST_IN(input_data[idx]);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(tan(data));
 }
 
