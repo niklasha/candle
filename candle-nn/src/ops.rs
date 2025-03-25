@@ -451,6 +451,28 @@ impl candle::CustomOp1 for SoftmaxLastDim {
             candle::MetalStorage::new(output, device.clone(), elem_count, storage.dtype());
         Ok((newstorage, layout.shape().clone()))
     }
+
+    #[cfg(feature = "vulkan")]
+    fn vulkan_fwd(
+        &self,
+        storage: &candle::VulkanStorage,
+        layout: &candle::Layout,
+    ) -> Result<(candle::VulkanStorage, candle::Shape)> {
+        let dtype = storage.dtype();
+        let kernel = match dtype {
+            DType::F32 => "softmax_f32",
+            DType::F16 => "softmax_f16",
+            DType::BF16 => "softmax_bf16",
+            _ => candle::bail!("softmax: unsupported dtype {dtype:?}"),
+        };
+        let device = storage.device();
+        let pipeline = device
+            .kernels()
+            .load_pipeline(device.device(), kernel)
+            .map_err(candle::Error::wrap)?;
+        let out = storage.softmax_last_dim_op_impl(layout, &pipeline)?;
+        Ok((out, layout.shape().clone()))
+    }
 }
 
 pub fn softmax_last_dim(xs: &Tensor) -> Result<Tensor> {

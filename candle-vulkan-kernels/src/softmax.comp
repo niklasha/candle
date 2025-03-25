@@ -1,0 +1,76 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    uint base_offset;
+    uint rank;
+    uint axis;
+    uint _pad0;
+    uvec4 shape;
+    uvec4 stride;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    INNER_TYPE input_data[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+    OUTER_TYPE output_data[];
+};
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x) INNER_TYPE(x)
+#endif
+
+void main() {
+    uint global_idx = gl_GlobalInvocationID.x;
+
+    // Compute the logical N-dimensional index for this thread
+    uvec4 gid = uvec4(0);
+    uint remaining = global_idx;
+    for (uint i = 0; i < pc.rank; ++i) {
+        uint dim = pc.shape[i];
+        gid[i] = remaining % dim;
+        remaining = remaining / dim;
+    }
+
+    // Determine the base offset to the start of the row for the reduction
+    uint base = pc.base_offset;
+    for (uint i = 0; i < pc.rank; ++i) {
+        if (i != pc.axis) {
+            base += gid[i] * pc.stride[i];
+        }
+    }
+
+    // Compute max element for numerical stability
+    float max_val = -3.402823466e+38; // -FLT_MAX
+    for (uint i = 0; i < pc.shape[pc.axis]; ++i) {
+        float val = CAST_IN(input_data[base + i * pc.stride[pc.axis]]);
+        if (val > max_val) {
+            max_val = val;
+        }
+    }
+
+    // Compute sum of exp(x - max)
+    float sum = 0.0;
+    for (uint i = 0; i < pc.shape[pc.axis]; ++i) {
+        float val = CAST_IN(input_data[base + i * pc.stride[pc.axis]]);
+        sum += exp(val - max_val);
+    }
+
+    // Write normalized softmax result
+    for (uint i = 0; i < pc.shape[pc.axis]; ++i) {
+        float val = CAST_IN(input_data[base + i * pc.stride[pc.axis]]);
+        float softmax_val = exp(val - max_val) / sum;
+        output_data[base + i * pc.stride[pc.axis]] = CAST_OUT(softmax_val);
+    }
+}
