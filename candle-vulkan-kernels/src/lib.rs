@@ -265,6 +265,9 @@ impl Kernels {
         kernels.insert("sin_f32".to_string(), sin_float::load(device.clone())?);
         kernels.insert("cos_f32".to_string(), cos_float::load(device.clone())?);
         kernels.insert("tan_f32".to_string(), tan_float::load(device.clone())?);
+        kernels.insert("sigmoid_f32".to_string(), sigmoid_float::load(device.clone())?);
+        kernels.insert("exp_f32".to_string(), exp_float::load(device.clone())?);
+        kernels.insert("recip_f32".to_string(), recip_float::load(device.clone())?);
         kernels.insert("neg_f16".to_string(), neg_float16_t::load(device.clone())?);
         kernels.insert("abs_f16".to_string(), abs_float16_t::load(device.clone())?);
         kernels.insert("sign_f16".to_string(), sign_float16_t::load(device.clone())?);
@@ -280,6 +283,9 @@ impl Kernels {
         kernels.insert("sin_f16".to_string(), sin_float16_t::load(device.clone())?);
         kernels.insert("cos_f16".to_string(), cos_float16_t::load(device.clone())?);
         kernels.insert("tan_f16".to_string(), tan_float16_t::load(device.clone())?);
+        kernels.insert("sigmoid_f16".to_string(), sigmoid_float16_t::load(device.clone())?);
+        kernels.insert("exp_f16".to_string(), exp_float16_t::load(device.clone())?);
+        kernels.insert("recip_f16".to_string(), recip_float16_t::load(device.clone())?);
         kernels.insert("neg_bf16".to_string(), neg_bf16::load(device.clone())?);
         kernels.insert("abs_bf16".to_string(), abs_bf16::load(device.clone())?);
         kernels.insert("sign_bf16".to_string(), sign_bf16::load(device.clone())?);
@@ -295,6 +301,9 @@ impl Kernels {
         kernels.insert("sin_bf16".to_string(), sin_bf16::load(device.clone())?);
         kernels.insert("cos_bf16".to_string(), cos_bf16::load(device.clone())?);
         kernels.insert("tan_bf16".to_string(), tan_bf16::load(device.clone())?);
+        kernels.insert("sigmoid_bf16".to_string(), sigmoid_bf16::load(device.clone())?);
+        kernels.insert("exp_bf16".to_string(), exp_bf16::load(device.clone())?);
+        kernels.insert("recip_bf16".to_string(), recip_bf16::load(device.clone())?);
 
         kernels.insert("add_f32".to_string(), add_float::load(device.clone())?);
         kernels.insert("sub_f32".to_string(), sub_float::load(device.clone())?);
@@ -545,6 +554,9 @@ unary_kernels!(
     (sin_float, "sin_op", "float", "float", "0"),
     (cos_float, "cos_op", "float", "float", "0"),
     (tan_float, "tan_op", "float", "float", "0"),
+    (sigmoid_float, "sigmoid_op", "float", "float", "0"),
+    (exp_float, "exp_op", "float", "float", "0"),
+    (recip_float, "recip_op", "float", "float", "0"),
     (neg_float16_t, "neg_op", "float", "float16_t", "0"),
     (abs_float16_t, "abs_op", "float", "float16_t", "0"),
     (sign_float16_t, "sign_op", "float", "float16_t", "0"),
@@ -560,6 +572,9 @@ unary_kernels!(
     (sin_float16_t, "sin_op", "float", "float16_t", "0"),
     (cos_float16_t, "cos_op", "float", "float16_t", "0"),
     (tan_float16_t, "tan_op", "float", "float16_t", "0"),
+    (sigmoid_float16_t, "sigmoid_op", "float", "float16_t", "0"),
+    (exp_float16_t, "exp_op", "float", "float16_t", "0"),
+    (recip_float16_t, "recip_op", "float", "float16_t", "0"),
     (neg_bf16, "neg_op", "float", "uint16_t", "1"),
     (abs_bf16, "abs_op", "float", "uint16_t", "1"),
     (sign_bf16, "sign_op", "float", "uint16_t", "1"),
@@ -575,6 +590,9 @@ unary_kernels!(
     (sin_bf16, "sin_op", "float", "uint16_t", "1"),
     (cos_bf16, "cos_op", "float", "uint16_t", "1"),
     (tan_bf16, "tan_op", "float", "uint16_t", "1"),
+    (sigmoid_bf16, "sigmoid_op", "float", "uint16_t", "1"),
+    (exp_bf16, "exp_op", "float", "uint16_t", "1"),
+    (recip_bf16, "recip_op", "float", "uint16_t", "1"),
 );
 
 // unary_kernels!(
