@@ -269,6 +269,8 @@ impl crate::backend::BackendDevice for VulkanDevice {
         let required_features = DeviceFeatures {
             uniform_and_storage_buffer8_bit_access: true,
             storage_buffer16_bit_access: true,
+            shader_int8: true,
+            shader_int16: true,
             shader_int64: true,
             shader_float16: true,
             shader_buffer_float32_atomic_add: true,

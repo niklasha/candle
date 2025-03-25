@@ -238,8 +238,8 @@ impl Kernels {
     pub fn new(device: Arc<Device>) -> Result<Self, VulkanKernelError> {
         let mut kernels = HashMap::new();
 
-        kernels.insert("cast_f32_f16".to_string(), float_to_half::load(device.clone())?);
-        kernels.insert("cast_f16_f32".to_string(), half_to_float::load(device.clone())?);
+        kernels.insert("cast_f32_f16".to_string(), float_to_float16_t::load(device.clone())?);
+        kernels.insert("cast_f16_f32".to_string(), float16_t_to_float::load(device.clone())?);
         kernels.insert("cast_u32_f32".to_string(), uint_to_float::load(device.clone())?);
         kernels.insert("cast_u32_u8".to_string(), uint_to_uint8_t::load(device.clone())?);
         kernels.insert("cast_u8_f32".to_string(), uint8_t_to_float::load(device.clone())?);
@@ -247,7 +247,7 @@ impl Kernels {
         kernels.insert("cast_f32_bf16".to_string(), float_to_bf16::load(device.clone())?);
         kernels.insert("cast_bf16_u32".to_string(), bf16_to_uint::load(device.clone())?);
         kernels.insert("cast_u32_bf16".to_string(), uint_to_bf16::load(device.clone())?);
-        kernels.insert("cast_bf16_f16".to_string(), bf16_to_half::load(device.clone())?);
+        kernels.insert("cast_bf16_f16".to_string(), bf16_to_float16_t::load(device.clone())?);
         kernels.insert("cast_u32_i64".to_string(), uint_to_int64_t::load(device.clone())?);
 
         kernels.insert("neg_f32".to_string(), neg_float::load(device.clone())?);
@@ -265,21 +265,21 @@ impl Kernels {
         kernels.insert("sin_f32".to_string(), sin_float::load(device.clone())?);
         kernels.insert("cos_f32".to_string(), cos_float::load(device.clone())?);
         kernels.insert("tan_f32".to_string(), tan_float::load(device.clone())?);
-        kernels.insert("neg_f16".to_string(), neg_half::load(device.clone())?);
-        kernels.insert("abs_f16".to_string(), abs_half::load(device.clone())?);
-        kernels.insert("sign_f16".to_string(), sign_half::load(device.clone())?);
-        kernels.insert("gelu_f16".to_string(), gelu_half::load(device.clone())?);
-        kernels.insert("gelu_erf_f16".to_string(), gelu_erf_half::load(device.clone())?);
-        kernels.insert("erf_f16".to_string(), erf_half::load(device.clone())?);
-        kernels.insert("silu_f16".to_string(), silu_half::load(device.clone())?);
-        kernels.insert("ceil_f16".to_string(), ceil_half::load(device.clone())?);
-        kernels.insert("floor_f16".to_string(), floor_half::load(device.clone())?);
-        kernels.insert("round_f16".to_string(), round_half::load(device.clone())?);
-        kernels.insert("sqr_f16".to_string(), sqr_half::load(device.clone())?);
-        kernels.insert("sqrt_f16".to_string(), sqrt_half::load(device.clone())?);
-        kernels.insert("sin_f16".to_string(), sin_half::load(device.clone())?);
-        kernels.insert("cos_f16".to_string(), cos_half::load(device.clone())?);
-        kernels.insert("tan_f16".to_string(), tan_half::load(device.clone())?);
+        kernels.insert("neg_f16".to_string(), neg_float16_t::load(device.clone())?);
+        kernels.insert("abs_f16".to_string(), abs_float16_t::load(device.clone())?);
+        kernels.insert("sign_f16".to_string(), sign_float16_t::load(device.clone())?);
+        kernels.insert("gelu_f16".to_string(), gelu_float16_t::load(device.clone())?);
+        kernels.insert("gelu_erf_f16".to_string(), gelu_erf_float16_t::load(device.clone())?);
+        kernels.insert("erf_f16".to_string(), erf_float16_t::load(device.clone())?);
+        kernels.insert("silu_f16".to_string(), silu_float16_t::load(device.clone())?);
+        kernels.insert("ceil_f16".to_string(), ceil_float16_t::load(device.clone())?);
+        kernels.insert("floor_f16".to_string(), floor_float16_t::load(device.clone())?);
+        kernels.insert("round_f16".to_string(), round_float16_t::load(device.clone())?);
+        kernels.insert("sqr_f16".to_string(), sqr_float16_t::load(device.clone())?);
+        kernels.insert("sqrt_f16".to_string(), sqrt_float16_t::load(device.clone())?);
+        kernels.insert("sin_f16".to_string(), sin_float16_t::load(device.clone())?);
+        kernels.insert("cos_f16".to_string(), cos_float16_t::load(device.clone())?);
+        kernels.insert("tan_f16".to_string(), tan_float16_t::load(device.clone())?);
         kernels.insert("neg_bf16".to_string(), neg_bf16::load(device.clone())?);
         kernels.insert("abs_bf16".to_string(), abs_bf16::load(device.clone())?);
         kernels.insert("sign_bf16".to_string(), sign_bf16::load(device.clone())?);
@@ -332,76 +332,76 @@ impl Kernels {
         kernels.insert ("gather_u8_i64".to_string(), gather_uint8_t_int64_t::load(device.clone())?);
         kernels.insert ("gather_u8_bf16".to_string(), gather_uint8_t_bf16::load(device.clone())?);
         kernels.insert ("gather_u8_f32".to_string(),  gather_uint8_t_float::load(device.clone())?);
-        //kernels.insert ("gather_u8_f16".to_string(), gather_uint8_t_half::load(device.clone())?);
+        //kernels.insert ("gather_u8_f16".to_string(), gather_uint8_t_float16_t::load(device.clone())?);
         kernels.insert ("gather_u32_u8".to_string(), gather_uint_uint8_t::load(device.clone())?);
         kernels.insert ("gather_u32_u32".to_string(), gather_uint_uint::load(device.clone())?);
         kernels.insert ("gather_u32_i64".to_string(), gather_uint_int64_t::load(device.clone())?);
         kernels.insert ("gather_u32_bf16".to_string(), gather_uint_bf16::load(device.clone())?);
         kernels.insert ("gather_u32_f32".to_string(), gather_uint_float::load(device.clone())?);
-        //kernels.insert ("gather_u32_f16".to_string(), gather_uint_half::load(device.clone())?);
+        //kernels.insert ("gather_u32_f16".to_string(), gather_uint_float16_t::load(device.clone())?);
         kernels.insert ("gather_i64_u8".to_string(), gather_int64_t_uint8_t::load(device.clone())?);
         kernels.insert ("gather_i64_u32".to_string(), gather_int64_t_uint::load(device.clone())?);
         kernels.insert ("gather_i64_i64".to_string(), gather_int64_t_int64_t::load(device.clone())?);
         kernels.insert ("gather_i64_bf16".to_string(), gather_int64_t_bf16::load(device.clone())?);
         kernels.insert ("gather_i64_f32".to_string(), gather_int64_t_float::load(device.clone())?);
-        //kernels.insert ("gather_i64_f16".to_string(), gather_int64_t_half::load(device.clone())?);
+        //kernels.insert ("gather_i64_f16".to_string(), gather_int64_t_float16_t::load(device.clone())?);
 
         //kernels.insert ("scatter_add_u8_u8".to_string(), scatter_add_uint8_t_uint8_t::load(device.clone())?);
         kernels.insert ("scatter_add_u8_u32".to_string(), scatter_add_uint8_t_uint::load(device.clone())?);
         //kernels.insert ("scatter_add_u8_i64".to_string(), scatter_add_uint8_t_int64_t::load(device.clone())?);
         kernels.insert ("scatter_add_u8_bf16".to_string(), scatter_add_uint8_t_bf16::load(device.clone())?);
         kernels.insert ("scatter_add_u8_f32".to_string(),  scatter_add_uint8_t_float::load(device.clone())?);
-        //kernels.insert ("scatter_add_u8_f16".to_string(), scatter_add_uint8_t_half::load(device.clone())?);
+        //kernels.insert ("scatter_add_u8_f16".to_string(), scatter_add_uint8_t_float16_t::load(device.clone())?);
         //kernels.insert ("scatter_add_u32_u8".to_string(), scatter_add_uint_uint8_t::load(device.clone())?);
         kernels.insert ("scatter_add_u32_u32".to_string(), scatter_add_uint_uint::load(device.clone())?);
         //kernels.insert ("scatter_add_u32_i64".to_string(), scatter_add_uint_int64_t::load(device.clone())?);
         kernels.insert ("scatter_add_u32_bf16".to_string(), scatter_add_uint_bf16::load(device.clone())?);
         kernels.insert ("scatter_add_u32_f32".to_string(), scatter_add_uint_float::load(device.clone())?);
-        //kernels.insert ("scatter_add_u32_f16".to_string(), scatter_add_uint_half::load(device.clone())?);
+        //kernels.insert ("scatter_add_u32_f16".to_string(), scatter_add_uint_float16_t::load(device.clone())?);
         //kernels.insert ("scatter_add_i64_u8".to_string(), scatter_add_int64_t_uint8_t::load(device.clone())?);
         kernels.insert ("scatter_add_i64_u32".to_string(), scatter_add_int64_t_uint::load(device.clone())?);
         //kernels.insert ("scatter_add_i64_i64".to_string(), scatter_add_int64_t_int64_t::load(device.clone())?);
         kernels.insert ("scatter_add_i64_bf16".to_string(), scatter_add_int64_t_bf16::load(device.clone())?);
         kernels.insert ("scatter_add_i64_f32".to_string(), scatter_add_int64_t_float::load(device.clone())?);
-        //kernels.insert ("scatter_add_i64_f16".to_string(), scatter_add_int64_t_half::load(device.clone())?);
+        //kernels.insert ("scatter_add_i64_f16".to_string(), scatter_add_int64_t_float16_t::load(device.clone())?);
 
         //kernels.insert ("index_add_u8_u8".to_string(), index_add_uint8_t_uint8_t::load(device.clone())?);
         kernels.insert ("index_add_u8_u32".to_string(), index_add_uint8_t_uint::load(device.clone())?);
         //kernels.insert ("index_add_u8_i64".to_string(), index_add_uint8_t_int64_t::load(device.clone())?);
         kernels.insert ("index_add_u8_bf16".to_string(), index_add_uint8_t_bf16::load(device.clone())?);
         kernels.insert ("index_add_u8_f32".to_string(),  index_add_uint8_t_float::load(device.clone())?);
-        //kernels.insert ("index_add_u8_f16".to_string(), index_add_uint8_t_half::load(device.clone())?);
+        //kernels.insert ("index_add_u8_f16".to_string(), index_add_uint8_t_float16_t::load(device.clone())?);
         //kernels.insert ("index_add_u32_u8".to_string(), index_add_uint_uint8_t::load(device.clone())?);
         kernels.insert ("index_add_u32_u32".to_string(), index_add_uint_uint::load(device.clone())?);
         //kernels.insert ("index_add_u32_i64".to_string(), index_add_uint_int64_t::load(device.clone())?);
         kernels.insert ("index_add_u32_bf16".to_string(), index_add_uint_bf16::load(device.clone())?);
         kernels.insert ("index_add_u32_f32".to_string(), index_add_uint_float::load(device.clone())?);
-        //kernels.insert ("index_add_u32_f16".to_string(), index_add_uint_half::load(device.clone())?);
+        //kernels.insert ("index_add_u32_f16".to_string(), index_add_uint_float16_t::load(device.clone())?);
         //kernels.insert ("index_add_i64_u8".to_string(), index_add_int64_t_uint8_t::load(device.clone())?);
         kernels.insert ("index_add_i64_u32".to_string(), index_add_int64_t_uint::load(device.clone())?);
         //kernels.insert ("index_add_i64_i64".to_string(), index_add_int64_t_int64_t::load(device.clone())?);
         kernels.insert ("index_add_i64_bf16".to_string(), index_add_int64_t_bf16::load(device.clone())?);
         kernels.insert ("index_add_i64_f32".to_string(), index_add_int64_t_float::load(device.clone())?);
-        //kernels.insert ("index_add_i64_f16".to_string(), index_add_int64_t_half::load(device.clone())?);
+        //kernels.insert ("index_add_i64_f16".to_string(), index_add_int64_t_float16_t::load(device.clone())?);
 
         kernels.insert ("index_select_u8_u8".to_string(), index_select_uint8_t_uint8_t::load(device.clone())?);
         kernels.insert ("index_select_u8_u32".to_string(), index_select_uint8_t_uint::load(device.clone())?);
         kernels.insert ("index_select_u8_i64".to_string(), index_select_uint8_t_int64_t::load(device.clone())?);
         kernels.insert ("index_select_u8_bf16".to_string(), index_select_uint8_t_bf16::load(device.clone())?);
         kernels.insert ("index_select_u8_f32".to_string(),  index_select_uint8_t_float::load(device.clone())?);
-        //kernels.insert ("index_select_u8_f16".to_string(), index_select_uint8_t_half::load(device.clone())?);
+        //kernels.insert ("index_select_u8_f16".to_string(), index_select_uint8_t_float16_t::load(device.clone())?);
         kernels.insert ("index_select_u32_u8".to_string(), index_select_uint_uint8_t::load(device.clone())?);
         kernels.insert ("index_select_u32_u32".to_string(), index_select_uint_uint::load(device.clone())?);
         kernels.insert ("index_select_u32_i64".to_string(), index_select_uint_int64_t::load(device.clone())?);
         kernels.insert ("index_select_u32_bf16".to_string(), index_select_uint_bf16::load(device.clone())?);
         kernels.insert ("index_select_u32_f32".to_string(), index_select_uint_float::load(device.clone())?);
-        //kernels.insert ("index_select_u32_f16".to_string(), index_select_uint_half::load(device.clone())?);
+        //kernels.insert ("index_select_u32_f16".to_string(), index_select_uint_float16_t::load(device.clone())?);
         kernels.insert ("index_select_i64_u8".to_string(), index_select_int64_t_uint8_t::load(device.clone())?);
         kernels.insert ("index_select_i64_u32".to_string(), index_select_int64_t_uint::load(device.clone())?);
         kernels.insert ("index_select_i64_i64".to_string(), index_select_int64_t_int64_t::load(device.clone())?);
         kernels.insert ("index_select_i64_bf16".to_string(), index_select_int64_t_bf16::load(device.clone())?);
         kernels.insert ("index_select_i64_f32".to_string(), index_select_int64_t_float::load(device.clone())?);
-        //kernels.insert ("index_select_i64_f16".to_string(), index_select_int64_t_half::load(device.clone())?);
+        //kernels.insert ("index_select_i64_f16".to_string(), index_select_int64_t_float16_t::load(device.clone())?);
 
         kernels.insert ("copy2d_f32".to_string(), copy2d_float::load(device.clone())?);
         kernels.insert ("copy2d_u32".to_string(), copy2d_uint::load(device.clone())?);
@@ -428,6 +428,13 @@ impl Kernels {
 
         kernels.insert("gemm_f32".to_string(), gemm_float::load(device.clone())?);
         kernels.insert("gemm_bf16".to_string(), gemm_bf16::load(device.clone())?);
+
+        kernels.insert("arg_sort_f32".to_string(), sort_float::load(device.clone())?);
+        kernels.insert("arg_sort_u32".to_string(), sort_uint::load(device.clone())?);
+        kernels.insert("arg_sort_i64".to_string(), sort_int64_t::load(device.clone())?);
+        kernels.insert("arg_srot_bf16".to_string(), sort_bf16::load(device.clone())?);
+        kernels.insert("arg_sort_f16".to_string(), sort_float16_t::load(device.clone())?);
+        kernels.insert("arg_sort_u8".to_string(), sort_uint8_t::load(device.clone())?);
 
         Ok(Self {
             kernels,
@@ -495,8 +502,8 @@ macro_rules! cast_kernels {
     };
 }
 cast_kernels!(
-    (float_to_half, "float", "float16_t", "0", "0", "0"),
-    (half_to_float, "float16_t", "float", "0", "0", "0"),
+    (float_to_float16_t, "float", "float16_t", "0", "0", "0"),
+    (float16_t_to_float, "float16_t", "float", "0", "0", "0"),
     (uint_to_float, "uint", "float", "0", "0", "0"),
     (uint_to_uint8_t, "uint", "uint8_t", "0", "0", "0"),
     (uint8_t_to_float, "uint8_t", "float", "1", "0", "0"),
@@ -504,7 +511,7 @@ cast_kernels!(
     (float_to_bf16, "float", "uint16_t", "0", "0", "1"),
     (bf16_to_uint, "uint16_t", "uint", "0", "1", "0"),
     (uint_to_bf16, "uint", "uint16_t", "0", "0", "1"),
-    (bf16_to_half, "uint16_t", "float16_t", "0", "1", "0"),
+    (bf16_to_float16_t, "uint16_t", "float16_t", "0", "1", "0"),
     (uint_to_int64_t, "uint", "int64_t", "0", "0", "0"),
 );
 
@@ -538,21 +545,21 @@ unary_kernels!(
     (sin_float, "sin_op", "float", "float", "0"),
     (cos_float, "cos_op", "float", "float", "0"),
     (tan_float, "tan_op", "float", "float", "0"),
-    (neg_half, "neg_op", "float", "float16_t", "0"),
-    (abs_half, "abs_op", "float", "float16_t", "0"),
-    (sign_half, "sign_op", "float", "float16_t", "0"),
-    (gelu_half, "gelu_op", "float", "float16_t", "0"),
-    (gelu_erf_half, "gelu_erf_op", "float", "float16_t", "0"),
-    (erf_half, "erf_op", "float", "float16_t", "0"),
-    (silu_half, "silu_op", "float", "float16_t", "0"),
-    (ceil_half, "ceil_op", "float", "float16_t", "0"),
-    (floor_half, "floor_op", "float", "float16_t", "0"),
-    (round_half, "round_op", "float", "float16_t", "0"),
-    (sqr_half, "sqr_op", "float", "float16_t", "0"),
-    (sqrt_half, "sqrt_op", "float", "float16_t", "0"),
-    (sin_half, "sin_op", "float", "float16_t", "0"),
-    (cos_half, "cos_op", "float", "float16_t", "0"),
-    (tan_half, "tan_op", "float", "float16_t", "0"),
+    (neg_float16_t, "neg_op", "float", "float16_t", "0"),
+    (abs_float16_t, "abs_op", "float", "float16_t", "0"),
+    (sign_float16_t, "sign_op", "float", "float16_t", "0"),
+    (gelu_float16_t, "gelu_op", "float", "float16_t", "0"),
+    (gelu_erf_float16_t, "gelu_erf_op", "float", "float16_t", "0"),
+    (erf_float16_t, "erf_op", "float", "float16_t", "0"),
+    (silu_float16_t, "silu_op", "float", "float16_t", "0"),
+    (ceil_float16_t, "ceil_op", "float", "float16_t", "0"),
+    (floor_float16_t, "floor_op", "float", "float16_t", "0"),
+    (round_float16_t, "round_op", "float", "float16_t", "0"),
+    (sqr_float16_t, "sqr_op", "float", "float16_t", "0"),
+    (sqrt_float16_t, "sqrt_op", "float", "float16_t", "0"),
+    (sin_float16_t, "sin_op", "float", "float16_t", "0"),
+    (cos_float16_t, "cos_op", "float", "float16_t", "0"),
+    (tan_float16_t, "tan_op", "float", "float16_t", "0"),
     (neg_bf16, "neg_op", "float", "uint16_t", "1"),
     (abs_bf16, "abs_op", "float", "uint16_t", "1"),
     (sign_bf16, "sign_op", "float", "uint16_t", "1"),
@@ -698,19 +705,19 @@ gather_kernels!(
     (gather_uint8_t_int64_t, "uint8_t", "int64_t", "0"),
     (gather_uint8_t_bf16, "uint8_t", "float", "1"),
     (gather_uint8_t_float, "uint8_t", "float", "0"),
-//    (gather_uint8_t_half, "uint8_t", "half", "0"),
+//    (gather_uint8_t_float16_t, "uint8_t", "float16_t", "0"),
     (gather_uint_uint8_t, "uint", "uint8_t", "0"),
     (gather_uint_uint, "uint", "uint", "0"),
     (gather_uint_int64_t, "uint", "int64_t", "0"),
     (gather_uint_bf16, "uint", "float", "1"),
     (gather_uint_float, "uint", "float", "0"),
-//    (gather_uint_half, "uint", "half", "0"),
+//    (gather_uint_float16_t, "uint", "float16_t", "0"),
     (gather_int64_t_uint8_t, "int64_t", "uint8_t", "0"),
     (gather_int64_t_uint, "int64_t", "uint", "0"),
     (gather_int64_t_int64_t, "int64_t", "int64_t", "0"),
     (gather_int64_t_bf16, "int64_t", "float", "1"),
     (gather_int64_t_float, "int64_t", "float", "0"),
-//    (index_select_int64_t_half, "int64_t", "half", "0"),
+//    (index_select_int64_t_float16_t, "int64_t", "float16_t", "0"),
 );
 
 macro_rules! scatter_add_kernels {
@@ -733,19 +740,19 @@ scatter_add_kernels!(
 //    (scatter_add_uint8_t_int64_t, "uint8_t", "int64_t", "0"),
     (scatter_add_uint8_t_bf16, "uint8_t", "float", "1"),
     (scatter_add_uint8_t_float, "uint8_t", "float", "0"),
-//    (scatter_add_uint8_t_half, "uint8_t", "half", "0"),
+//    (scatter_add_uint8_t_float16_t, "uint8_t", "float16_t", "0"),
 //    (scatter_add_uint_uint8_t, "uint", "uint8_t", "0"),
     (scatter_add_uint_uint, "uint", "uint", "0"),
 //    (scatter_add_uint_int64_t, "uint", "int64_t", "0"),
     (scatter_add_uint_bf16, "uint", "float", "1"),
     (scatter_add_uint_float, "uint", "float", "0"),
-//    (scatter_add_uint_half, "uint", "half", "0"),
+//    (scatter_add_uint_float16_t, "uint", "float16_t", "0"),
 //    (scatter_add_int64_t_uint8_t, "int64_t", "uint8_t", "0"),
     (scatter_add_int64_t_uint, "int64_t", "uint", "0"),
 //    (scatter_add_int64_t_int64_t, "int64_t", "int64_t", "0"),
     (scatter_add_int64_t_bf16, "int64_t", "float", "1"),
     (scatter_add_int64_t_float, "int64_t", "float", "0"),
-//    (scatter_add_int64_t_half, "int64_t", "half", "0"),
+//    (scatter_add_int64_t_float16_t, "int64_t", "float16_t", "0"),
 );
 
 macro_rules! index_add_kernels {
@@ -768,19 +775,19 @@ index_add_kernels!(
 //    (index_add_uint8_t_int64_t, "uint8_t", "int64_t", "0"),
     (index_add_uint8_t_bf16, "uint8_t", "float", "1"),
     (index_add_uint8_t_float, "uint8_t", "float", "0"),
-//    (index_add_uint8_t_half, "uint8_t", "half", "0"),
+//    (index_add_uint8_t_float16_t, "uint8_t", "float16_t", "0"),
 //    (index_add_uint_uint8_t, "uint", "uint8_t", "0"),
     (index_add_uint_uint, "uint", "uint", "0"),
 //    (index_add_uint_int64_t, "uint", "int64_t", "0"),
     (index_add_uint_bf16, "uint", "float", "1"),
     (index_add_uint_float, "uint", "float", "0"),
-//    (index_add_uint_half, "uint", "half", "0"),
+//    (index_add_uint_float16_t, "uint", "float16_t", "0"),
 //    (index_add_int64_t_uint8_t, "int64_t", "uint8_t", "0"),
     (index_add_int64_t_uint, "int64_t", "uint", "0"),
 //    (index_add_int64_t_int64_t, "int64_t", "int64_t", "0"),
     (index_add_int64_t_bf16, "int64_t", "float", "1"),
     (index_add_int64_t_float, "int64_t", "float", "0"),
-//    (index_add_int64_t_half, "int64_t", "half", "0"),
+//    (index_add_int64_t_float16_t, "int64_t", "float16_t", "0"),
 );
 
 macro_rules! index_select_kernels {
@@ -803,19 +810,19 @@ index_select_kernels!(
     (index_select_uint8_t_int64_t, "uint8_t", "int64_t", "0"),
     (index_select_uint8_t_bf16, "uint8_t", "float", "1"),
     (index_select_uint8_t_float, "uint8_t", "float", "0"),
-//    (index_select_uint8_t_half, "uint8_t", "half", "0"),
+//    (index_select_uint8_t_float16_t, "uint8_t", "float16_t", "0"),
     (index_select_uint_uint8_t, "uint", "uint8_t", "0"),
     (index_select_uint_uint, "uint", "uint", "0"),
     (index_select_uint_int64_t, "uint", "int64_t", "0"),
     (index_select_uint_bf16, "uint", "float", "1"),
     (index_select_uint_float, "uint", "float", "0"),
-//    (index_select_uint_half, "uint", "half", "0"),
+//    (index_select_uint_float16_t, "uint", "float16_t", "0"),
     (index_select_int64_t_uint8_t, "int64_t", "uint8_t", "0"),
     (index_select_int64_t_uint, "int64_t", "uint", "0"),
     (index_select_int64_t_int64_t, "int64_t", "int64_t", "0"),
     (index_select_int64_t_bf16, "int64_t", "float", "1"),
     (index_select_int64_t_float, "int64_t", "float", "0"),
-//    (index_select_int64_t_half, "int64_t", "half", "0"),
+//    (index_select_int64_t_float16_t, "int64_t", "float16_t", "0"),
 );
 
 macro_rules! copy2d_shaders {
@@ -924,6 +931,29 @@ macro_rules! gemm_kernels {
 gemm_kernels!(
     (gemm_float, "float", "0"),
     (gemm_bf16, "uint16_t", "1"),
+);
+
+macro_rules! sort_kernels {
+    ($( ($mod:ident, $ty:literal, $bf16:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/sort.comp",
+                    define: [("TYPE", $ty), ("BF16", $bf16)]
+                }
+            }
+        )*
+    };
+}
+
+sort_kernels!(
+    (sort_float, "float", "0"),
+    (sort_uint, "uint", "0"),
+    (sort_int64_t, "int64_t", "0"),
+    (sort_bf16, "uint16_t", "1"),
+    (sort_float16_t, "float16_t", "0"),
+    (sort_uint8_t, "uint8_t", "0"),
 );
 
 // #[allow(clippy::too_many_arguments)]

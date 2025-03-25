@@ -1077,6 +1077,52 @@ impl VulkanStorage {
         Ok(())
     }
 
+    pub fn arg_sort_op_impl(
+        &self,
+        layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+        ascending: bool,
+    ) -> Result<VulkanStorage> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct ArgSortPushConstants {
+            nrows: u32,
+            ncols: u32,
+            ncols_pad: u32,
+            ascending: u32,
+        }
+
+        let el = layout.shape().elem_count();
+        let ncols = layout.shape().dims().last().copied().unwrap_or(1);
+        let nrows = el / ncols;
+        let ncols_pad = ncols.next_power_of_two();
+
+        if ncols_pad > 1024 {
+            crate::bail!("arg_sort: padded row size {ncols_pad} exceeds 1024");
+        }
+
+        let push_constants = ArgSortPushConstants {
+            nrows: nrows as u32,
+            ncols: ncols as u32,
+            ncols_pad: ncols_pad as u32,
+            ascending: if ascending { 1 } else { 0 },
+        };
+
+        let device = self.device();
+        let output = unsafe { device.alloc_uninit(&layout.shape().clone().into(), DType::U32)? };
+
+        self.execute_compute_kernel(
+            &pipeline,
+            vec![(*self.buffer).clone().unwrap()],
+            vec![(*output.buffer).clone().unwrap()],
+            [nrows as u32, 1, 1],
+            push_constants,
+            true,
+        )?;
+
+        Ok(output)
+    }
+
     pub fn random_impl(
         &self,
         shape: &Shape,
