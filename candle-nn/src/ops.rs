@@ -1,9 +1,9 @@
 //! Tensor ops.
 //!
 
+use candle::backend::BackendStorage;
 use candle::{CpuStorage, DType, Layout, Module, Result, Shape, Tensor, D};
 use rayon::prelude::*;
-use candle::backend::BackendStorage;
 
 /// Applies the softmax function to the input tensor, rescaling the element so that elements on
 /// a slice of fixed index on dimension `dim` are between 0 and 1 and sum to 1.
@@ -895,6 +895,36 @@ impl candle::CustomOp3 for LayerNorm {
         .map_err(candle::Error::wrap)?;
         let newstorage = candle::MetalStorage::new(output, device.clone(), elem_count, s1.dtype());
         Ok((newstorage, l1.shape().clone()))
+    }
+
+    #[cfg(feature = "vulkan")]
+    fn vulkan_fwd(
+        &self,
+        input: &candle::VulkanStorage,
+        input_l: &Layout,
+        gamma: &candle::VulkanStorage,
+        gamma_l: &Layout,
+        beta: &candle::VulkanStorage,
+        beta_l: &Layout,
+    ) -> Result<(candle::VulkanStorage, Shape)> {
+        let dtype = input.dtype();
+        let key = match dtype {
+            DType::F32 => "layernorm_f32",
+            DType::F16 => "layernorm_f16",
+            DType::BF16 => "layernorm_bf16",
+            _ => candle::bail!("layernorm: unsupported dtype {dtype:?}"),
+        };
+
+        let device = input.device();
+        let pipeline = device
+            .kernels()
+            .load_pipeline(device.device(), key)
+            .map_err(candle::Error::wrap)?;
+
+        let axis = input_l.shape().rank() - gamma_l.shape().rank();
+
+        let out = input.layernorm_op_impl(input_l, gamma, beta, &pipeline, axis, self.eps)?;
+        Ok((out, input_l.shape().clone()))
     }
 }
 
