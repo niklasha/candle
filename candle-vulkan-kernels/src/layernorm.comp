@@ -23,8 +23,7 @@ layout(push_constant) uniform PushConstants {
     uint base;
     uint rank;
     uint normalized_axis;
-    INNER_TYPE eps;
-
+    float eps;
     uvec4 shape;
     uvec4 stride;
 } pc;
@@ -53,7 +52,7 @@ void main() {
         var += centered * centered;
     }
     var /= INNER_TYPE(row_size);
-    INNER_TYPE rstd = inversesqrt(var + pc.eps);
+    INNER_TYPE rstd = inversesqrt(var + INNER_TYPE(pc.eps));
 
     // Apply normalization
     INNER_TYPE x = CAST_IN(input_data[gid]);

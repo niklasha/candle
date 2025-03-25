@@ -1,0 +1,72 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_AMD_gpu_shader_half_float: enable
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x) INNER_TYPE(x)
+#endif
+
+// Workgroup size: 1 thread per row
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint base_offset;
+    uint rank;
+    uint axis;
+    float eps;
+    uvec4 shape;
+    uvec4 stride;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    INNER_TYPE input_data[];
+};
+
+layout(set = 0, binding = 1) readonly buffer GammaBuffer {
+    INNER_TYPE gamma[];
+};
+
+layout(set = 0, binding = 2) writeonly buffer OutputBuffer {
+    OUTER_TYPE output_data[];
+};
+
+void main() {
+    uint row = gl_GlobalInvocationID.x;
+    uint rank = pc.rank;
+    uint axis = pc.axis;
+    uint offset = pc.base_offset;
+
+    // Compute strides for rows and normalized dims
+    uint row_stride = 1;
+    for (uint i = axis; i < rank; ++i) {
+        row_stride *= pc.shape[i];
+    }
+
+    uint col_stride = row_stride;
+    row_stride = 1;
+    for (uint i = 0; i < axis; ++i) {
+        row_stride *= pc.shape[i];
+    }
+
+    INNER_TYPE sum_sq = INNER_TYPE(0.0);
+    for (uint i = 0; i < col_stride; ++i) {
+        uint idx = offset + row * col_stride + i;
+        INNER_TYPE val = CAST_IN(input_data[idx]);
+        sum_sq += val * val;
+    }
+
+    INNER_TYPE norm = inversesqrt(sum_sq / INNER_TYPE(col_stride) + INNER_TYPE(pc.eps));
+
+    for (uint i = 0; i < col_stride; ++i) {
+        uint idx = offset + row * col_stride + i;
+        INNER_TYPE val = CAST_IN(input_data[idx]) * norm;
+        INNER_TYPE gamma_val = CAST_IN(gamma[i]);
+        output_data[idx] = CAST_OUT(val * gamma_val);
+    }
+}
