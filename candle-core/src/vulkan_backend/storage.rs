@@ -712,9 +712,9 @@ impl VulkanStorage {
     }
 
     fn index_add_op_impl(
-        &self,                         // source tensor (we scatter from here)
-        index: &Self,                  // indices tensor
-        src: &Self,                    // destination tensor (we add into this)
+        &self,
+        index: &Self,
+        src: &Self,
         dst_layout: &Layout,
         src_layout: &Layout,
         pipeline: &Arc<ComputePipeline>,
@@ -1454,12 +1454,12 @@ impl crate::backend::BackendStorage for VulkanStorage {
 
     fn index_add(
         &self,
-        layout: &Layout,           // layout of destination (self)
-        ids: &Self,                // index tensor
-        ids_layout: &Layout,       // layout of index tensor
-        src: &Self,                // source tensor to scatter from
-        src_layout: &Layout,       // layout of source
-        dim: usize,                // dimension along which to index
+        layout: &Layout,
+        ids: &Self,
+        ids_layout: &Layout,
+        src: &Self,
+        src_layout: &Layout,
+        dim: usize,
     ) -> Result<Self> {
         if !ids_layout.is_contiguous() {
             crate::bail!("Vulkan index_add requires contiguous ids");
@@ -1503,14 +1503,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
             .map_err(VulkanError::from)?;
 
         // Call the low-level op executor
-        self.index_add_op_impl(
-            ids,
-            src,
-            layout,
-            src_layout,
-            &pipeline,
-            dim,
-        )
+        self.index_add_op_impl(ids, src, layout, src_layout, &pipeline, dim)
     }
 
     fn matmul(
