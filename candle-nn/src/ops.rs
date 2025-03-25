@@ -646,6 +646,35 @@ impl candle::CustomOp2 for RmsNorm {
         let newstorage = candle::MetalStorage::new(output, device.clone(), elem_count, s1.dtype());
         Ok((newstorage, l1.shape().clone()))
     }
+
+    #[cfg(feature = "vulkan")]
+    fn vulkan_fwd(
+        &self,
+        input: &candle::VulkanStorage,
+        input_l: &Layout,
+        gamma: &candle::VulkanStorage,
+        gamma_l: &Layout,
+    ) -> Result<(candle::VulkanStorage, Shape)> {
+        let dtype = input.dtype();
+        let key = match dtype {
+            DType::F32 => "rmsnorm_f32",
+            DType::F16 => "rmsnorm_f16",
+            DType::BF16 => "rmsnorm_bf16",
+            _ => candle::bail!("rmsnorm: unsupported dtype {dtype:?}"),
+        };
+
+        let device = input.device();
+        let pipeline = device
+            .kernels()
+            .load_pipeline(device.device(), key)
+            .map_err(candle::Error::wrap)?;
+
+        // Infer axis as input.rank - gamma.rank
+        let axis = input_l.shape().rank() - gamma_l.shape().rank();
+
+        let output = input.rmsnorm_op_impl(input_l, gamma, gamma_l, &pipeline, axis, self.eps)?;
+        Ok((output, input_l.shape().clone()))
+    }
 }
 
 pub fn rms_norm_slow(x: &Tensor, alpha: &Tensor, eps: f32) -> Result<Tensor> {
