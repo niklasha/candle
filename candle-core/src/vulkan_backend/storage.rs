@@ -676,6 +676,67 @@ impl VulkanStorage {
         }
     }
 
+    fn scatter_add_op_impl(
+        &self,
+        layout: &Layout,
+        ids: &Self,
+        src: &Self,
+        src_layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+        dim: usize,
+    ) -> Result<Self> {
+        if let (Some(dst_buf), Some(idx_buf), Some(src_buf)) = (
+            (*self.buffer).clone(),
+            (*ids.buffer).clone(),
+            (*src.buffer).clone(),
+        ) {
+            #[repr(C)]
+            #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+            struct ScatterAddPushConstants {
+                total_src_elems: u32,
+                rank: u32,
+                selected_dim: u32,
+                _pad: u32,
+                input_strides: [u32; 4],
+                output_strides: [u32; 4],
+            }
+
+            let rank = src_layout.shape().rank();
+            let total_src_elems = src_layout.shape().elem_count() as u32;
+
+            // Prepare padded strides
+            let mut padded_input_strides = [0u32; 4];
+            let mut padded_output_strides = [0u32; 4];
+
+            for i in 0..rank.min(4) {
+                padded_input_strides[i] = src_layout.stride()[i] as u32;
+                padded_output_strides[i] = layout.stride()[i] as u32;
+            }
+
+            let push_constants = ScatterAddPushConstants {
+                total_src_elems,
+                rank: rank as u32,
+                selected_dim: dim as u32,
+                _pad: 0,
+                input_strides: padded_input_strides,
+                output_strides: padded_output_strides,
+            };
+
+            self.execute_compute_kernel(
+                pipeline,
+                vec![src_buf, idx_buf],
+                vec![dst_buf],
+                [total_src_elems, 1, 1],
+                push_constants,
+                false,
+            )?;
+
+            Ok(self.clone())
+        } else {
+            Ok(self.clone())
+        }
+    }
+
     fn index_select_op_impl(
         &self,
         dst: &Self,
@@ -1436,7 +1497,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
             crate::bail!("gather requires tensors of the same rank");
         }
 
-        let mut out_shape = idx_layout.shape().dims().to_owned();
+        let out_shape = idx_layout.shape().dims().to_owned();
 
         let suffix = match (index.dtype, self.dtype) {
             (DType::U8, DType::F32) => "u8_f32",
@@ -1458,14 +1519,35 @@ impl crate::backend::BackendStorage for VulkanStorage {
 
     fn scatter_add(
         &self,
-        _: &Layout,
-        _: &Self,
-        _: &Layout,
-        _: &Self,
-        _: &Layout,
-        _: usize,
+        layout: &Layout,
+        index: &Self,
+        idx_layout: &Layout,
+        src: &Self,
+        src_layout: &Layout,
+        dim: usize,
     ) -> Result<Self> {
-        fail!()
+        if src_layout.shape().dims() != idx_layout.shape().dims() {
+            crate::bail!("scatter_add: index and source shapes must match");
+        }
+
+        let dtype = self.dtype;
+        let idtype = index.dtype;
+
+        let suffix = match (idtype, dtype) {
+            (DType::U8, DType::F32) => "u8_f32",
+            (DType::U32, DType::F32) => "u32_f32",
+            (DType::I64, DType::F32) => "i64_f32",
+            _ => crate::bail!("scatter_add: unsupported dtype combination"),
+        };
+
+        let key = format!("scatter_add_{}", suffix);
+        let pipeline = self
+            .device()
+            .kernels()
+            .load_pipeline(self.device().device(), &key)
+            .map_err(VulkanError::from)?;
+
+        self.scatter_add_op_impl(layout, index, src, src_layout, &pipeline, dim)
     }
 
     fn index_select(
