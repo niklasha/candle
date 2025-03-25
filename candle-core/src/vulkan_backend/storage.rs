@@ -174,7 +174,7 @@ impl VulkanStorage {
     //     .dispatch([(elem_count as u32 + 255) / 512, 1, 1])
     //     .map_err(|e| VulkanError::Message(format!("Dispatch failed: {e}")))?;
 
-    fn unary_op_impl(
+    pub fn unary_op_impl(
         &self,
         layout: &Layout,
         pipeline: &Arc<ComputePipeline>,

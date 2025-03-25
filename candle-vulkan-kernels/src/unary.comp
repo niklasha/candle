@@ -188,5 +188,26 @@ void tan_op() {
     output_data[idx] = CAST_OUT(tan(data));
 }
 
+void sigmoid_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
+    output_data[idx] = CAST_OUT(1.0 / (1.0 + exp(-data)));
+}
+
+void exp_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
+    output_data[idx] = CAST_OUT(exp(data));
+}
+
+void recip_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
+    output_data[idx] = CAST_OUT(1.0 / data);
+}
+
 // Conditional main() selection based on the define.
 void main() { OP(); }
