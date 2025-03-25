@@ -202,6 +202,13 @@ void exp_op() {
     output_data[idx] = CAST_OUT(exp(data));
 }
 
+void log_op() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint a_idx = get_strided_index(idx);
+    INNER_TYPE data = CAST_IN(input_data[a_idx]);
+    output_data[idx] = CAST_OUT(log(data));
+}
+
 void recip_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index(idx);
