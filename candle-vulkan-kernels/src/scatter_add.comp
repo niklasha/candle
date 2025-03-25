@@ -1,0 +1,53 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_AMD_gpu_shader_half_float : enable
+#extension GL_EXT_shader_atomic_float : enable
+#extension GL_EXT_shader_atomic_int64 : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer Input {
+    TYPE input_data[];
+};
+layout(set = 0, binding = 1) buffer Indices {
+    IDX_TYPE index_data[];
+};
+layout(set = 0, binding = 2) buffer Output {
+    TYPE output_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint total_src_elems;
+    uint rank;
+    uint selected_dim;
+    uvec4 input_strides;
+    uvec4 output_strides;
+};
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= total_src_elems) return;
+
+    // Decode input coordinate from linear index
+    uvec4 coord = uvec4(0);
+    uint rem = gid;
+    for (uint d = 0; d < rank; ++d) {
+        coord[d] = rem / input_strides[d];
+        rem %= input_strides[d];
+    }
+
+    // Replace selected coordinate with index lookup
+    coord[selected_dim] = uint(index_data[gid]);
+
+    // Compute output linear index
+    uint dst_idx = 0;
+    for (uint d = 0; d < rank; ++d) {
+        dst_idx += coord[d] * output_strides[d];
+    }
+
+    atomicAdd(output_data[dst_idx], input_data[gid]);
+}
