@@ -1,4 +1,5 @@
-use crate::{Result, Tensor};
+use crate::backend::{BackendDevice, BackendStorage};
+use crate::{DType, Result, Tensor};
 use rayon::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
@@ -199,6 +200,31 @@ impl crate::CustomOp1 for ArgSort {
         .map_err(crate::Error::wrap)?;
         let dst = crate::MetalStorage::new(dst, device.clone(), el, DType::U32);
         Ok((dst, layout.shape().clone()))
+    }
+
+    #[cfg(feature = "vulkan")]
+    fn vulkan_fwd(
+        &self,
+        storage: &crate::VulkanStorage,
+        layout: &crate::Layout,
+    ) -> Result<(crate::VulkanStorage, crate::Shape)> {
+        let dtype = storage.dtype();
+        let key = match dtype {
+            DType::F32 => "arg_sort_f32",
+            DType::U32 => "arg_sort_u32",
+            DType::I64 => "arg_sort_i64",
+            DType::BF16 => "arg_sort_bf16",
+            DType::F16 => "arg_sort_f16",
+            DType::U8 => "arg_sort_u8",
+            _ => crate::bail!("arg_sort: unsupported dtype {dtype:?}"),
+        };
+        let device = storage.device();
+        let pipeline = device
+            .kernels()
+            .load_pipeline(device.device(), &key)
+            .map_err(crate::Error::wrap)?;
+        let out = storage.arg_sort_op_impl(layout, &pipeline, self.asc)?;
+        Ok((out, layout.shape().clone()))
     }
 }
 
