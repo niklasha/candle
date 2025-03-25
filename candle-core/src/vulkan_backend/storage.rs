@@ -2,7 +2,7 @@
 
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
+use crate::{bail, CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
 use std::fmt;
 use std::sync::Arc;
 use vulkano::buffer::{BufferContents, Subbuffer};
@@ -1236,6 +1236,69 @@ impl VulkanStorage {
             [((count as u32) / shape.dims()[axis] as u32), 1, 1],
             push_constants,
             true,
+        )?;
+
+        Ok(output)
+    }
+
+    pub fn softmax_last_dim_op_impl(
+        &self,
+        layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<Self> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            base_offset: u32,
+            rank: u32,
+            axis: u32,
+            _pad0: u32,
+            shape: [u32; 4],
+            stride: [u32; 4],
+        }
+
+        let axis = layout.shape().rank() - 1;
+
+        let shape = layout.shape();
+        let stride = layout.stride();
+
+        let mut shape_arr = [1u32; 4];
+        let mut stride_arr = [1u32; 4];
+
+        for i in 0..shape.rank().min(4) {
+            shape_arr[i] = shape.dim(i)? as u32;
+        }
+        for i in 0..stride.len().min(4) {
+            stride_arr[i] = stride[i] as u32;
+        }
+
+        let push_constants = PushConstants {
+            base_offset: layout.start_offset() as u32,
+            rank: shape.rank() as u32,
+            axis: axis as u32,
+            _pad0: 0,
+            shape: shape_arr,
+            stride: stride_arr,
+        };
+
+        let device = self.device();
+        let output = unsafe { device.alloc_uninit(shape, self.dtype())? };
+
+        // Total number of softmax rows = product of dims except axis
+        let mut nrows = 1u32;
+        for i in 0..shape.rank() {
+            if i != axis {
+                nrows *= shape.dim(i)? as u32;
+            }
+        }
+
+        self.execute_compute_kernel(
+            pipeline,
+            vec![(*self.buffer).clone().unwrap()],
+            vec![(*output.buffer).clone().unwrap()],
+            [nrows, 1, 1],
+            push_constants,
+            false,
         )?;
 
         Ok(output)
