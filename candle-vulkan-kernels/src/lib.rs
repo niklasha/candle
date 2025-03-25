@@ -457,6 +457,10 @@ impl Kernels {
         kernels.insert("rmsnorm_f16".to_string(), rmsnorm_float16_t::load(device.clone())?);
         kernels.insert("rmsnorm_bf16".to_string(), rmsnorm_bf16::load(device.clone())?);
 
+        kernels.insert("softmax_f32".to_string(), softmax_float::load(device.clone())?);
+        kernels.insert("softmax_f16".to_string(), softmax_float16_t::load(device.clone())?);
+        kernels.insert("softmax_bf16".to_string(), softmax_bf16::load(device.clone())?);
+
         Ok(Self {
             kernels,
             pipelines: RwLock::new(HashMap::new()),
@@ -1028,6 +1032,26 @@ rmsnorm_kernels!(
     (rmsnorm_float, "float", "float", "0"),
     (rmsnorm_float16_t, "float", "float16_t", "0"),
     (rmsnorm_bf16, "float", "uint16_t", "1"),
+);
+
+macro_rules! softmax_kernels {
+    ($( ($mod:ident, $inner_type:literal, $outer_type:literal, $bf16:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/softmax.comp",
+                    define: [("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type), ("BF16", $bf16)]
+                }
+            }
+        )*
+    };
+}
+
+softmax_kernels!(
+    (softmax_float, "float", "float", "0"),
+    (softmax_float16_t, "float", "float16_t", "0"),
+    (softmax_bf16, "float", "uint16_t", "1"),
 );
 
 // #[allow(clippy::too_many_arguments)]
