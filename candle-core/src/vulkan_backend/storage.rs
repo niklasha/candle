@@ -711,6 +711,83 @@ impl VulkanStorage {
         }
     }
 
+    fn index_add_op_impl(
+        &self,                         // source tensor (we scatter from here)
+        index: &Self,                  // indices tensor
+        src: &Self,                    // destination tensor (we add into this)
+        dst_layout: &Layout,
+        src_layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+        dim: usize,
+    ) -> Result<Self> {
+        if let (Some(dst_buffer), Some(index_buffer), Some(src_buffer)) = (
+            (*self.buffer).clone(),
+            (*index.buffer).clone(),
+            (*src.buffer).clone(),
+        ) {
+            #[repr(C)]
+            #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+            struct IndexAddPushConstants {
+                total_src_elems: u32,
+                rank: u32,
+                selected_dim: u32,
+                _pad0: u32,
+                input_strides: [u32; 4],
+                output_strides: [u32; 4],
+            }
+
+            let src_shape = src_layout.shape().dims();
+            let dst_shape = dst_layout.shape().dims();
+            let rank = src_shape.len();
+
+            if rank != dst_shape.len() {
+                Err(VulkanError::Message("Rank mismatch in index_add".into()))?;
+            }
+
+            let total_src_elems = src_shape.iter().copied().product::<usize>() as u32;
+
+            let mut padded_input_strides = vec![0u32; 4];
+            let mut padded_output_strides = vec![0u32; 4];
+
+            for i in 0..rank.min(4) {
+                padded_input_strides[i] = src_layout.stride()[i] as u32;
+                padded_output_strides[i] = dst_layout.stride()[i] as u32;
+            }
+
+            let push_constants = IndexAddPushConstants {
+                total_src_elems,
+                rank: rank as u32,
+                selected_dim: dim as u32,
+                _pad0: 0,
+                input_strides: [
+                    padded_input_strides[0],
+                    padded_input_strides[1],
+                    padded_input_strides[2],
+                    padded_input_strides[3],
+                ],
+                output_strides: [
+                    padded_output_strides[0],
+                    padded_output_strides[1],
+                    padded_output_strides[2],
+                    padded_output_strides[3],
+                ],
+            };
+
+            self.execute_compute_kernel(
+                pipeline,
+                vec![src_buffer, index_buffer],
+                vec![dst_buffer],
+                [total_src_elems, 1, 1],
+                push_constants,
+                false,
+            )?;
+
+            Ok(self.clone())
+        } else {
+            Ok(self.clone())
+        }
+    }
+
     /// Generic copy_op_impl helper.
     ///
     /// This function dispatches a compute kernel using a prebuilt pipeline.
@@ -1365,14 +1442,63 @@ impl crate::backend::BackendStorage for VulkanStorage {
 
     fn index_add(
         &self,
-        _: &Layout,
-        _: &Self,
-        _: &Layout,
-        _: &Self,
-        _: &Layout,
-        _: usize,
+        layout: &Layout,           // layout of destination (self)
+        ids: &Self,                // index tensor
+        ids_layout: &Layout,       // layout of index tensor
+        src: &Self,                // source tensor to scatter from
+        src_layout: &Layout,       // layout of source
+        dim: usize,                // dimension along which to index
     ) -> Result<Self> {
-        fail!()
+        if !ids_layout.is_contiguous() {
+            crate::bail!("Vulkan index_add requires contiguous ids");
+        }
+
+        let dtype = self.dtype;
+        let idtype = ids.dtype;
+
+        let suffix = match (idtype, dtype) {
+            (DType::U8, DType::U8) => "u8_u8",
+            (DType::U8, DType::U32) => "u8_u32",
+            (DType::U8, DType::I64) => "u8_i64",
+            (DType::U8, DType::BF16) => "u8_bf16",
+            (DType::U8, DType::F32) => "u8_f32",
+            (DType::U8, DType::F16) => "u8_f16",
+
+            (DType::U32, DType::U8) => "u32_u8",
+            (DType::U32, DType::U32) => "u32_u32",
+            (DType::U32, DType::I64) => "u32_i64",
+            (DType::U32, DType::F32) => "u32_f32",
+            (DType::U32, DType::F16) => "u32_f16",
+            (DType::U32, DType::BF16) => "u32_bf16",
+
+            (DType::I64, DType::U8) => "i64_u8",
+            (DType::I64, DType::U32) => "i64_u32",
+            (DType::I64, DType::I64) => "i64_i64",
+            (DType::I64, DType::F32) => "i64_f32",
+            (DType::I64, DType::F16) => "i64_f16",
+            (DType::I64, DType::BF16) => "i64_bf16",
+
+            (left, right) => {
+                crate::bail!("Vulkan contiguous index_add {left:?} {right:?} not implemented")
+            }
+        };
+
+        let key = format!("index_add_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
+
+        // Call the low-level op executor
+        self.index_add_op_impl(
+            ids,
+            src,
+            layout,
+            src_layout,
+            &pipeline,
+            dim,
+        )
     }
 
     fn matmul(
