@@ -1,0 +1,66 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_AMD_gpu_shader_half_float: enable
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x) INNER_TYPE(x)
+#endif
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InBuf { OUTER_TYPE input_data[]; };
+layout(set = 0, binding = 1) readonly buffer GammaBuf { OUTER_TYPE gamma[]; };
+layout(set = 0, binding = 2) readonly buffer BetaBuf { OUTER_TYPE beta[]; };
+layout(set = 0, binding = 3) writeonly buffer OutBuf { OUTER_TYPE output_data[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint base;
+    uint rank;
+    uint normalized_axis;
+    INNER_TYPE eps;
+
+    uvec4 shape;
+    uvec4 stride;
+} pc;
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+
+    uint row_size = pc.shape[pc.normalized_axis];
+    if (row_size == 0) return;
+
+    uint row_idx = gid / row_size;
+    uint row_start = row_idx * row_size;
+
+    // Compute mean
+    INNER_TYPE mean = INNER_TYPE(0.0);
+    for (uint i = 0; i < row_size; ++i) {
+        mean += CAST_IN(input_data[row_start + i]);
+    }
+    mean /= INNER_TYPE(row_size);
+
+    // Compute variance
+    INNER_TYPE var = INNER_TYPE(0.0);
+    for (uint i = 0; i < row_size; ++i) {
+        INNER_TYPE x = CAST_IN(input_data[row_start + i]);
+        INNER_TYPE centered = x - mean;
+        var += centered * centered;
+    }
+    var /= INNER_TYPE(row_size);
+    INNER_TYPE rstd = inversesqrt(var + pc.eps);
+
+    // Apply normalization
+    INNER_TYPE x = CAST_IN(input_data[gid]);
+    INNER_TYPE x_hat = (x - mean) * rstd;
+    INNER_TYPE g = CAST_IN(gamma[gid % row_size]);
+    INNER_TYPE b = CAST_IN(beta[gid % row_size]);
+    INNER_TYPE y = x_hat * g + b;
+
+    output_data[gid] = CAST_OUT(y);
+}

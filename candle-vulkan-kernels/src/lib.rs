@@ -448,6 +448,10 @@ impl Kernels {
         kernels.insert("arg_sort_f16".to_string(), sort_float16_t::load(device.clone())?);
         kernels.insert("arg_sort_u8".to_string(), sort_uint8_t::load(device.clone())?);
 
+        kernels.insert("layernorm_f32".to_string(), layernorm_float::load(device.clone())?);
+        kernels.insert("layernorm_f16".to_string(), layernorm_float16_t::load(device.clone())?);
+        kernels.insert("layernorm_bf16".to_string(), layernorm_bf16::load(device.clone())?);
+
         Ok(Self {
             kernels,
             pipelines: RwLock::new(HashMap::new()),
@@ -978,6 +982,26 @@ sort_kernels!(
     (sort_bf16, "uint16_t", "1"),
     (sort_float16_t, "float16_t", "0"),
     (sort_uint8_t, "uint8_t", "0"),
+);
+
+macro_rules! layernorm_kernels {
+    ($( ($mod:ident, $inner_type:literal, $outer_type:literal, $bf16:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/layernorm.comp",
+                    define: [("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type), ("BF16", $bf16)]
+                }
+            }
+        )*
+    };
+}
+
+layernorm_kernels!(
+    (layernorm_float, "float", "float", "0"),
+    (layernorm_float16_t, "float", "float16_t", "0"),
+    (layernorm_bf16, "float", "uint16_t", "1"),
 );
 
 // #[allow(clippy::too_many_arguments)]
