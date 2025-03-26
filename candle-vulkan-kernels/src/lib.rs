@@ -464,6 +464,9 @@ impl Kernels {
         kernels.insert("rope_f32".to_string(), rope_float::load(device.clone())?);
         kernels.insert("rope_f16".to_string(), rope_float16_t::load(device.clone())?);
         kernels.insert("rope_bf16".to_string(), rope_bf16::load(device.clone())?);
+        kernels.insert("rope_thd_f32".to_string(), rope_thd_float::load(device.clone())?);
+        kernels.insert("rope_thd_f16".to_string(), rope_thd_float16_t::load(device.clone())?);
+        kernels.insert("rope_thd_bf16".to_string(), rope_thd_bf16::load(device.clone())?);
 
         Ok(Self {
             kernels,
@@ -1059,13 +1062,13 @@ softmax_kernels!(
 );
 
 macro_rules! rope_kernels {
-    ($( ($mod:ident, $inner_type:literal, $outer_type:literal, $bf16:literal) ),* $(,)?) => {
+    ($( ($mod:ident, $inner_type:literal, $outer_type:literal, $bf16:literal, $thd:literal) ),* $(,)?) => {
         $(
             mod $mod {
                 vulkano_shaders::shader! {
                     ty: "compute",
                     path: "src/rope.comp",
-                    define: [("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type), ("BF16", $bf16)]
+                    define: [("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type), ("BF16", $bf16), ("THD", $thd)]
                 }
             }
         )*
@@ -1073,9 +1076,12 @@ macro_rules! rope_kernels {
 }
 
 rope_kernels!(
-    (rope_float, "float", "float", "0"),
-    (rope_float16_t, "float", "float16_t", "0"),
-    (rope_bf16, "float", "uint16_t", "1"),
+    (rope_float, "float", "float", "0", "0"),
+    (rope_float16_t, "float", "float16_t", "0", "0"),
+    (rope_bf16, "float", "uint16_t", "1", "0"),
+    (rope_thd_float, "float", "float", "0", "1"),
+    (rope_thd_float16_t, "float", "float16_t", "0", "1"),
+    (rope_thd_bf16, "float", "uint16_t", "1", "1"),
 );
 
 // #[allow(clippy::too_many_arguments)]
