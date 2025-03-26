@@ -466,12 +466,13 @@ impl candle::CustomOp3 for RotaryEmb {
         l_sin: &Layout,
     ) -> Result<(candle::VulkanStorage, Shape)> {
         let dtype = src.dtype();
-        let kernel = match dtype {
-            DType::F32 => "rope_f32",
-            DType::F16 => "rope_f16",
-            DType::BF16 => "rope_bf16",
+        let suffix = match dtype {
+            DType::F32 => "f32",
+            DType::F16 => "f16",
+            DType::BF16 => "bf16",
             _ => candle::bail!("rope: unsupported dtype {dtype:?}"),
         };
+        let kernel = &format!("rope_{}", suffix);
 
         let device = src.device();
         let pipeline = device
@@ -479,7 +480,7 @@ impl candle::CustomOp3 for RotaryEmb {
             .load_pipeline(device.device(), kernel)
             .map_err(candle::Error::wrap)?;
 
-        let out = src.rope_op_impl(l_src, cos, l_cos, sin, l_sin, &pipeline)?;
+        let out = src.rope_op_impl(l_src, cos, sin, &pipeline)?;
         Ok((out, l_src.shape().clone()))
     }
 }
@@ -732,6 +733,34 @@ impl candle::CustomOp3 for RotaryEmbThd {
         )
         .map_err(candle::Error::wrap)?;
         let out = candle::MetalStorage::new(output, device.clone(), el, src.dtype());
+        Ok((out, l_src.shape().clone()))
+    }
+
+    fn vulkan_fwd(
+        &self,
+        src: &candle::VulkanStorage,
+        l_src: &Layout,
+        cos: &candle::VulkanStorage,
+        l_cos: &Layout,
+        sin: &candle::VulkanStorage,
+        l_sin: &Layout,
+    ) -> Result<(candle::VulkanStorage, Shape)> {
+        let dtype = src.dtype();
+        let suffix = match dtype {
+            DType::F32 => "f32",
+            DType::F16 => "f16",
+            DType::BF16 => "bf16",
+            _ => candle::bail!("rope: unsupported dtype {dtype:?}"),
+        };
+        let kernel = &format!("rope_thd_{}", suffix);
+
+        let device = src.device();
+        let pipeline = device
+            .kernels()
+            .load_pipeline(device.device(), kernel)
+            .map_err(candle::Error::wrap)?;
+
+        let out = src.rope_op_impl(l_src, cos, sin, &pipeline)?;
         Ok((out, l_src.shape().clone()))
     }
 }
