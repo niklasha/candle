@@ -1,6 +1,7 @@
 //! Rotary Embeddings
 //!
-use candle::{CpuStorage, Layout, Result, Shape, Tensor, D};
+use candle::backend::BackendStorage;
+use candle::{CpuStorage, DType, Layout, Result, Shape, Tensor, D};
 use rayon::prelude::*;
 
 /// Interleaved variant of rotary embeddings.
@@ -450,6 +451,33 @@ impl candle::CustomOp3 for RotaryEmb {
         )
         .map_err(candle::Error::wrap)?;
         let out = candle::MetalStorage::new(output, device.clone(), el, src.dtype());
+        Ok((out, l_src.shape().clone()))
+    }
+
+    fn vulkan_fwd(
+        &self,
+        src: &candle::VulkanStorage,
+        l_src: &Layout,
+        cos: &candle::VulkanStorage,
+        l_cos: &Layout,
+        sin: &candle::VulkanStorage,
+        l_sin: &Layout,
+    ) -> Result<(candle::VulkanStorage, Shape)> {
+        let dtype = src.dtype();
+        let kernel = match dtype {
+            DType::F32 => "rope_f32",
+            DType::F16 => "rope_f16",
+            DType::BF16 => "rope_bf16",
+            _ => candle::bail!("rope: unsupported dtype {dtype:?}"),
+        };
+
+        let device = src.device();
+        let pipeline = device
+            .kernels()
+            .load_pipeline(device.device(), kernel)
+            .map_err(candle::Error::wrap)?;
+
+        let out = src.rope_op_impl(l_src, cos, l_cos, sin, l_sin, &pipeline)?;
         Ok((out, l_src.shape().clone()))
     }
 }

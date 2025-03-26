@@ -1,0 +1,71 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    uint b_sz;
+    uint n_heads;
+    uint seq_len;
+    uint head_dim;
+
+    uint stride_bsz;
+    uint stride_head;
+    uint stride_seq;
+    uint stride_dim;
+
+    uint stride_cos_seq;
+    uint stride_cos_dim;
+    uint stride_sin_seq;
+    uint stride_sin_dim;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer InputData { INNER_TYPE input_data[]; };
+layout(set = 0, binding = 1) readonly buffer Cosine { INNER_TYPE cos[]; };
+layout(set = 0, binding = 2) readonly buffer Sine { INNER_TYPE sin[]; };
+layout(set = 0, binding = 3) writeonly buffer OutputData { OUTER_TYPE output_data[]; };
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x) INNER_TYPE(x)
+#endif
+
+// rotate_half: swaps pairs of dimensions [0, 1, 2, 3] -> [-1, 0, -3, -2] with sign flip
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+
+    if (gid >= pc.b_sz * pc.n_heads * pc.seq_len * pc.head_dim) return;
+
+    // Compute multi-dimensional indices
+    uint dim = gid % pc.head_dim;
+    uint seq = (gid / pc.head_dim) % pc.seq_len;
+    uint head = (gid / (pc.head_dim * pc.seq_len)) % pc.n_heads;
+    uint bsz = gid / (pc.head_dim * pc.seq_len * pc.n_heads);
+
+    // Compute input/output flat index
+    uint offset = bsz * pc.stride_bsz + head * pc.stride_head + seq * pc.stride_seq + dim * pc.stride_dim;
+    INNER_TYPE val = CAST_IN(input_data[offset]);
+
+    // Load cos/sin for this (seq, dim // 2)
+    uint cos_idx = seq * pc.stride_cos_seq + (dim % (pc.head_dim / 2)) * pc.stride_cos_dim;
+    INNER_TYPE c = cos[cos_idx];
+    INNER_TYPE s = sin[seq * pc.stride_sin_seq + (dim % (pc.head_dim / 2)) * pc.stride_sin_dim];
+
+    // Rotate even/odd dimensions
+    INNER_TYPE val_out;
+    if (dim < pc.head_dim / 2) {
+        INNER_TYPE val2 = CAST_IN(input_data[offset + (pc.head_dim / 2) * pc.stride_dim]);
+        val_out = val * c - val2 * s;
+    } else {
+        INNER_TYPE val2 = CAST_IN(input_data[offset - (pc.head_dim / 2) * pc.stride_dim]);
+        val_out = val * c + val2 * s;
+    }
+
+    output_data[offset] = CAST_OUT(val_out);
+}
