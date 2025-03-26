@@ -1369,28 +1369,14 @@ impl VulkanStorage {
         &self,
         layout: &Layout,
         cos: &Self,
-        cos_layout: &Layout,
         sin: &Self,
-        sin_layout: &Layout,
         pipeline: &Arc<ComputePipeline>,
     ) -> Result<Self> {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct PushConstants {
-            b_sz: u32,
-            n_heads: u32,
-            seq_len: u32,
-            head_dim: u32,
-
-            stride_bsz: u32,
-            stride_head: u32,
-            stride_seq: u32,
-            stride_dim: u32,
-
-            stride_cos_seq: u32,
-            stride_cos_dim: u32,
-            stride_sin_seq: u32,
-            stride_sin_dim: u32,
+            shape: [u32; 4],
+            strides: [u32; 4],
         }
 
         let input_buf = (*self.buffer).clone().ok_or_else(|| {
@@ -1411,11 +1397,6 @@ impl VulkanStorage {
             )))?;
         }
 
-        let bsz = shape[0];
-        let n_heads = shape[1];
-        let seq_len = shape[2];
-        let head_dim = shape[3];
-
         let out = unsafe {
             self.device()
                 .alloc_uninit(layout.shape(), self.dtype)?
@@ -1426,21 +1407,24 @@ impl VulkanStorage {
             return Err(VulkanError::Message("Expected 4D stride layout".into()))?;
         }
 
+        let strides: [u32; 4] = strides
+            .iter()
+            .copied()
+            .map(|s| s as u32)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let shape: [u32; 4] = shape
+            .iter()
+            .copied()
+            .map(|s| s as u32)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+
         let push_constants = PushConstants {
-            b_sz: shape[0] as u32,
-            n_heads: shape[1] as u32,
-            seq_len: shape[2] as u32,
-            head_dim: shape[3] as u32,
-
-            stride_bsz: strides[0] as u32,
-            stride_head: strides[1] as u32,
-            stride_seq: strides[2] as u32,
-            stride_dim: strides[3] as u32,
-
-            stride_cos_seq: cos_layout.stride()[0] as u32,
-            stride_cos_dim: cos_layout.stride()[1] as u32,
-            stride_sin_seq: sin_layout.stride()[0] as u32,
-            stride_sin_dim: sin_layout.stride()[1] as u32,
+            shape,
+            strides,
         };
 
         let total_elems = layout.shape().elem_count() as u32;
@@ -1645,6 +1629,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
     fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
         let suffix = match self.dtype {
             DType::F32 => "f32",
+            DType::F32 => "bf16",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let pipeline = self
@@ -1662,6 +1647,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
     fn elu(&self, layout: &Layout, alpha: f64) -> Result<Self> {
         let suffix = match self.dtype {
             DType::F32 => "f32",
+            DType::BF16 => "bf16",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let pipeline = self
