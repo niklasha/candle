@@ -1304,6 +1304,98 @@ impl VulkanStorage {
         Ok(output)
     }
 
+    pub fn rope_op_impl(
+        &self,
+        layout: &Layout,
+        cos: &Self,
+        cos_layout: &Layout,
+        sin: &Self,
+        sin_layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<Self> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            b_sz: u32,
+            n_heads: u32,
+            seq_len: u32,
+            head_dim: u32,
+
+            stride_bsz: u32,
+            stride_head: u32,
+            stride_seq: u32,
+            stride_dim: u32,
+
+            stride_cos_seq: u32,
+            stride_cos_dim: u32,
+            stride_sin_seq: u32,
+            stride_sin_dim: u32,
+        }
+
+        let input_buf = (*self.buffer).clone().ok_or_else(|| {
+            VulkanError::Message("rope_op_impl: missing input buffer".into())
+        })?;
+        let cos_buf = (*cos.buffer).clone().ok_or_else(|| {
+            VulkanError::Message("rope_op_impl: missing cos buffer".into())
+        })?;
+        let sin_buf = (*sin.buffer).clone().ok_or_else(|| {
+            VulkanError::Message("rope_op_impl: missing sin buffer".into())
+        })?;
+
+        let shape = layout.shape().dims();
+        if shape.len() != 4 {
+            return Err(VulkanError::Message(format!(
+                "Expected shape [B, H, T, D], got {:?}",
+                shape
+            )))?;
+        }
+
+        let bsz = shape[0];
+        let n_heads = shape[1];
+        let seq_len = shape[2];
+        let head_dim = shape[3];
+
+        let out = unsafe {
+            self.device()
+                .alloc_uninit(layout.shape(), self.dtype)?
+        };
+
+        let strides = layout.stride();
+        if strides.len() != 4 {
+            return Err(VulkanError::Message("Expected 4D stride layout".into()))?;
+        }
+
+        let push_constants = PushConstants {
+            b_sz: shape[0] as u32,
+            n_heads: shape[1] as u32,
+            seq_len: shape[2] as u32,
+            head_dim: shape[3] as u32,
+
+            stride_bsz: strides[0] as u32,
+            stride_head: strides[1] as u32,
+            stride_seq: strides[2] as u32,
+            stride_dim: strides[3] as u32,
+
+            stride_cos_seq: cos_layout.stride()[0] as u32,
+            stride_cos_dim: cos_layout.stride()[1] as u32,
+            stride_sin_seq: sin_layout.stride()[0] as u32,
+            stride_sin_dim: sin_layout.stride()[1] as u32,
+        };
+
+        let total_elems = layout.shape().elem_count() as u32;
+
+        self.execute_compute_kernel(
+            pipeline,
+            vec![input_buf, cos_buf, sin_buf],
+            vec![(*out.buffer).clone().unwrap()],
+            [total_elems, 1, 1],
+            push_constants,
+            false,
+        )?;
+
+        Ok(out)
+    }
+
     pub fn random_impl(
         &self,
         shape: &Shape,
