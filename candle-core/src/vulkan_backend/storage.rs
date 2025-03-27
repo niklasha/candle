@@ -1441,6 +1441,65 @@ impl VulkanStorage {
         Ok(out)
     }
 
+    pub fn rope_i_op_impl(
+        &self,
+        layout: &Layout,
+        cos: &VulkanStorage,
+        sin: &VulkanStorage,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<VulkanStorage> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            shape: [u32; 4],
+            strides: [u32; 4],
+        }
+
+        // Retrieve input buffers.
+        let input_buf = (*self.buffer)
+            .clone()
+            .ok_or_else(|| VulkanError::Message("rope_i_op_impl: missing input buffer".into()))?;
+        let cos_buf = (*cos.buffer)
+            .clone()
+            .ok_or_else(|| VulkanError::Message("rope_i_op_impl: missing cos buffer".into()))?;
+        let sin_buf = (*sin.buffer)
+            .clone()
+            .ok_or_else(|| VulkanError::Message("rope_i_op_impl: missing sin buffer".into()))?;
+
+        // Ensure the input tensor is 4D.
+        let dims = layout.shape().dims();
+        if dims.len() != 4 {
+            Err(VulkanError::Message(format!(
+                "rope_i_op_impl: expected 4D tensor, got shape {:?}",
+                dims
+            )))?;
+        }
+        let shape: [u32; 4] = dims.iter().map(|&d| d as u32).collect::<Vec<u32>>().try_into().unwrap();
+        let strides_vec: Vec<u32> = layout.stride().iter().map(|&s| s as u32).collect();
+        let strides: [u32; 4] = strides_vec.try_into().unwrap();
+
+        let push_constants = PushConstants { shape, strides };
+
+        // Allocate output storage with the same shape and data type.
+        let out = unsafe { self.device().alloc_uninit(layout.shape(), self.dtype())? };
+
+        // The number of pairs = B * H * T * (D/2)
+        let half = shape[3] >> 1;
+        let total_pairs = shape[0] * shape[1] * shape[2] * half;
+
+        // Dispatch one thread per pair.
+        self.execute_compute_kernel(
+            pipeline,
+            vec![input_buf, cos_buf, sin_buf],
+            vec![(*out.buffer).clone().unwrap()],
+            [total_pairs, 1, 1],
+            push_constants,
+            false,
+        )?;
+
+        Ok(out)
+    }
+
     pub fn random_impl(
         &self,
         shape: &Shape,

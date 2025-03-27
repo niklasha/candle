@@ -46,17 +46,15 @@ void main() {
 
     uint half_dim = pc.shape.w / 2;
     uint idx = seq * half_dim + dim % half_dim;
+
     INNER_TYPE c = cos[idx];
     INNER_TYPE s = sin[idx];
 
-    INNER_TYPE val_out;
-    if (dim < half_dim) {
-        INNER_TYPE val2 = CAST_IN(input_data[offset + half_dim * pc.strides.w]);
-        val_out = val * c - val2 * s;
-    } else {
-        INNER_TYPE val2 = CAST_IN(input_data[offset - half_dim * pc.strides.w]);
-        val_out = val * c + val2 * s;
-    }
+    INNER_TYPE val2 = (dim < half_dim)
+    ? CAST_IN(input_data[offset + half_dim * pc.strides.w])
+    : CAST_IN(input_data[offset - half_dim * pc.strides.w]);
+
+    INNER_TYPE val_out = (dim < half_dim) ? val * c - val2 * s : val * c + val2 * s;
 
     output_data[offset] = CAST_OUT(val_out);
 }
