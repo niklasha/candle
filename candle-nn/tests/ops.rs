@@ -161,18 +161,36 @@ fn ropei(device: &Device) -> Result<()> {
     let (b_size, num_head, seq_len, head_dim) = (2, 5, 10, 16);
     let el_count = b_size * num_head * seq_len * head_dim;
     let mut rng = StdRng::seed_from_u64(299792458);
-    let src: Vec<f32> = (0..el_count).map(|_| rng.random::<f32>()).collect();
-    let cos: Vec<f32> = (0..seq_len * head_dim / 2)
+    let srcv: Vec<f32> = (0..el_count).map(|_| rng.random::<f32>()).collect();
+    let cosv: Vec<f32> = (0..seq_len * head_dim / 2)
         .map(|_| rng.random::<f32>())
         .collect();
-    let sin: Vec<f32> = (0..seq_len * head_dim / 2)
+    let sinv: Vec<f32> = (0..seq_len * head_dim / 2)
         .map(|_| rng.random::<f32>())
         .collect();
-    let src = Tensor::from_vec(src, (b_size, num_head, seq_len, head_dim), device)?;
-    let cos = Tensor::from_vec(cos, (seq_len, head_dim / 2), device)?;
-    let sin = Tensor::from_vec(sin, (seq_len, head_dim / 2), device)?;
+    let src = Tensor::from_vec(srcv.clone(), (b_size, num_head, seq_len, head_dim), device)?;
+    let cos = Tensor::from_vec(cosv.clone(), (seq_len, head_dim / 2), device)?;
+    let sin = Tensor::from_vec(sinv.clone(), (seq_len, head_dim / 2), device)?;
+    println!("shape={:?}, strides={:?}", src.layout().shape(), src.layout().stride());
     let rope1 = candle_nn::rotary_emb::rope_i(&src, &cos, &sin)?;
+    println!("shape={:?}, strides={:?}", rope1.layout().shape(), rope1.layout().stride());
     let rope2 = candle_nn::rotary_emb::rope_i_slow(&src, &cos, &sin)?;
+    println!("shape={:?}, strides={:?}", rope2.layout().shape(), rope2.layout().stride());
+    let flat1 = rope1.flatten_all()?.to_vec1::<f32>()?;
+    let flat2 = rope2.flatten_all()?.to_vec1::<f32>()?;
+
+    for i in 0..16 {
+        println!(
+            "i={}: src={:.6} sin={:.6} cos={:.6} ropei={:.6}, ropei_slow={:.6}, diff={:.6}",
+            i,
+            srcv[i],
+            sinv[i],
+            cosv[i],
+            flat1[i],
+            flat2[i],
+            (flat1[i] - flat2[i]).abs()
+        );
+    }
     let sum_diff = (rope1 - rope2)?.abs()?.sum_all()?.to_vec0::<f32>()?;
     if device.is_cpu() {
         assert_eq!(sum_diff, 0.);
