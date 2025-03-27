@@ -1,5 +1,9 @@
 #version 450
 
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 // Buffer bindings.
@@ -21,6 +25,14 @@ layout(push_constant) uniform PushConstants {
     float add;         // additive constant
     float alpha;       // ELU alpha
 } pc;
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x) INNER_TYPE(x)
+#endif
 
 // This function converts a linear index to a physical index using the full
 // multi-dimensional layout. We assume row-major ordering.
@@ -58,15 +70,15 @@ uint get_strided_index(uint lin_idx) {
 void affine_op() {
     uint lin_idx = gl_GlobalInvocationID.x;
     uint data_index = get_strided_index(lin_idx);
-    float x = input_data[data_index];
-    output_data[lin_idx] = x * pc.mul + pc.add;
+    float x = CAST_IN(input_data[data_index]);
+    output_data[lin_idx] = CAST_OUT(x * pc.mul + pc.add);
 }
 
 void elu_op() {
     uint lin_idx = gl_GlobalInvocationID.x;
     uint data_index = get_strided_index(lin_idx);
-    float x = input_data[data_index];
-    output_data[lin_idx] = (x >= 0.0) ? x : pc.alpha * (exp(x) - 1.0);
+    float x = CAST_IN(input_data[data_index]);
+    output_data[lin_idx] = CAST_OUT((x >= 0.0) ? x : pc.alpha * (exp(x) - 1.0));
 }
 
 void main() {
