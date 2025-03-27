@@ -337,6 +337,7 @@ impl Kernels {
         kernels.insert("min_combine_u32".to_string(), min_combine_uint::load(device.clone())?);
 
         kernels.insert ("affine_f32".to_string(), affine_float::load(device.clone())?);
+        kernels.insert ("affine_bf16".to_string(), affine_bf16::load(device.clone())?);
         kernels.insert ("elu_f32".to_string(), elu_float::load(device.clone())?);
 
         kernels.insert ("gather_u8_u8".to_string(), gather_uint8_t_uint8_t::load(device.clone())?);
@@ -714,13 +715,13 @@ reduce_combine_kernels!(
 );
 
 macro_rules! affine_elu_kernels {
-    ($( ($mod:ident, $op:literal) ),* $(,)?) => {
+    ($( ($mod:ident, $op:literal, $inner_type:literal, $outer_type:literal, $bf16:literal) ),* $(,)?) => {
         $(
             mod $mod {
                 vulkano_shaders::shader! {
                     ty: "compute",
                     path: "src/affine_elu.comp",
-                    define: [("OP", $op)]
+                    define: [("OP", $op), ("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type), ("BF16", $bf16)]
                 }
             }
         )*
@@ -728,8 +729,9 @@ macro_rules! affine_elu_kernels {
 }
 
 affine_elu_kernels!(
-    (affine_float, "affine_op"),
-    (elu_float, "elu_op"),
+    (affine_float, "affine_op", "float", "float", "0"),
+    (affine_bf16, "affine_op", "float", "uint16_t", "1"),
+    (elu_float, "elu_op", "float", "float", "0"),
 );
 
 macro_rules! gather_kernels {
