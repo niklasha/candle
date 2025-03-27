@@ -1,0 +1,73 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+// Each invocation handles one pair: total pairs = B * H * T * (D/2)
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    // shape: (B, H, T, D), with D even.
+    uvec4 shape;
+    // strides for the input tensor.
+    uvec4 strides;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer InputData {
+    float input_data[];
+};
+
+layout(set = 0, binding = 1) readonly buffer Cosine {
+    float cos[];
+};
+
+layout(set = 0, binding = 2) readonly buffer Sine {
+    float sin[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer OutputData {
+    float output_data[];
+};
+
+void main() {
+    // Number of pairs per (b,h,t) is half the embedding dimension.
+    uint half_dim = pc.shape.w >> 1;  // D/2
+    uint total_pairs = pc.shape.x * pc.shape.y * pc.shape.z * half_dim;
+    uint gid = gl_GlobalInvocationID.x;
+    if(gid >= total_pairs) return;
+
+    // Decompose gid into (b, h, t, pair)
+    uint pair = gid % half_dim;
+    uint tmp = gid / half_dim;
+    uint t = tmp % pc.shape.z;
+    tmp = tmp / pc.shape.z;
+    uint h = tmp % pc.shape.y;
+    uint b = tmp / pc.shape.y;
+
+    // Compute base offset for the (b, h, t) slice.
+    uint base_offset = b * pc.strides.x + h * pc.strides.y + t * pc.strides.z;
+    // In a contiguous layout the pair is stored in consecutive positions:
+    // x₀ is at base_offset + pair*2, and x₁ at the next element.
+    uint offset0 = base_offset + pair * 2u;
+    uint offset1 = offset0 + 1u;
+
+    // Compute cosine/sine lookup index.
+    // For a given sequence t, there are half as many lookup entries as D.
+    // cs_index = t * (D/2) + pair.
+    uint cs_index = t * half_dim + pair;
+    float c = cos[cs_index];
+    float s_val = sin[cs_index];
+
+    // Apply the rotary transformation exactly as in rope_i_slow:
+    // y₀ = x₀ * cos - x₁ * sin,
+    // y₁ = x₀ * sin + x₁ * cos.
+    float x0 = input_data[offset0];
+    float x1 = input_data[offset1];
+    float y0 = x0 * c - x1 * s_val;
+    float y1 = x0 * s_val + x1 * c;
+
+    // Write the results back to the output buffer in the same paired order.
+    output_data[offset0] = y0;
+    output_data[offset1] = y1;
+}
