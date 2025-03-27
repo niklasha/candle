@@ -1379,15 +1379,15 @@ impl VulkanStorage {
             strides: [u32; 4],
         }
 
-        let input_buf = (*self.buffer).clone().ok_or_else(|| {
-            VulkanError::Message("rope_op_impl: missing input buffer".into())
-        })?;
-        let cos_buf = (*cos.buffer).clone().ok_or_else(|| {
-            VulkanError::Message("rope_op_impl: missing cos buffer".into())
-        })?;
-        let sin_buf = (*sin.buffer).clone().ok_or_else(|| {
-            VulkanError::Message("rope_op_impl: missing sin buffer".into())
-        })?;
+        let input_buf = (*self.buffer)
+            .clone()
+            .ok_or_else(|| VulkanError::Message("rope_op_impl: missing input buffer".into()))?;
+        let cos_buf = (*cos.buffer)
+            .clone()
+            .ok_or_else(|| VulkanError::Message("rope_op_impl: missing cos buffer".into()))?;
+        let sin_buf = (*sin.buffer)
+            .clone()
+            .ok_or_else(|| VulkanError::Message("rope_op_impl: missing sin buffer".into()))?;
 
         let shape = layout.shape().dims();
         if shape.len() != 4 {
@@ -1397,10 +1397,7 @@ impl VulkanStorage {
             )))?;
         }
 
-        let out = unsafe {
-            self.device()
-                .alloc_uninit(layout.shape(), self.dtype)?
-        };
+        let out = unsafe { self.device().alloc_uninit(layout.shape(), self.dtype)? };
 
         let strides = layout.stride();
         if strides.len() != 4 {
@@ -1422,10 +1419,7 @@ impl VulkanStorage {
             .try_into()
             .unwrap();
 
-        let push_constants = PushConstants {
-            shape,
-            strides,
-        };
+        let push_constants = PushConstants { shape, strides };
 
         let total_elems = layout.shape().elem_count() as u32;
 
@@ -1474,7 +1468,12 @@ impl VulkanStorage {
                 dims
             )))?;
         }
-        let shape: [u32; 4] = dims.iter().map(|&d| d as u32).collect::<Vec<u32>>().try_into().unwrap();
+        let shape: [u32; 4] = dims
+            .iter()
+            .map(|&d| d as u32)
+            .collect::<Vec<u32>>()
+            .try_into()
+            .unwrap();
         let strides_vec: Vec<u32> = layout.stride().iter().map(|&s| s as u32).collect();
         let strides: [u32; 4] = strides_vec.try_into().unwrap();
 
@@ -1688,7 +1687,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
     fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
         let suffix = match self.dtype {
             DType::F32 => "f32",
-            DType::F32 => "bf16",
+            DType::BF16 => "bf16",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let pipeline = self
