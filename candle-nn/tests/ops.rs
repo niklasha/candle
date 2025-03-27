@@ -171,11 +171,23 @@ fn ropei(device: &Device) -> Result<()> {
     let src = Tensor::from_vec(srcv.clone(), (b_size, num_head, seq_len, head_dim), device)?;
     let cos = Tensor::from_vec(cosv.clone(), (seq_len, head_dim / 2), device)?;
     let sin = Tensor::from_vec(sinv.clone(), (seq_len, head_dim / 2), device)?;
-    println!("shape={:?}, strides={:?}", src.layout().shape(), src.layout().stride());
+    println!(
+        "shape={:?}, strides={:?}",
+        src.layout().shape(),
+        src.layout().stride()
+    );
     let rope1 = candle_nn::rotary_emb::rope_i(&src, &cos, &sin)?;
-    println!("shape={:?}, strides={:?}", rope1.layout().shape(), rope1.layout().stride());
+    println!(
+        "shape={:?}, strides={:?}",
+        rope1.layout().shape(),
+        rope1.layout().stride()
+    );
     let rope2 = candle_nn::rotary_emb::rope_i_slow(&src, &cos, &sin)?;
-    println!("shape={:?}, strides={:?}", rope2.layout().shape(), rope2.layout().stride());
+    println!(
+        "shape={:?}, strides={:?}",
+        rope2.layout().shape(),
+        rope2.layout().stride()
+    );
     let flat1 = rope1.flatten_all()?.to_vec1::<f32>()?;
     let flat2 = rope2.flatten_all()?.to_vec1::<f32>()?;
 
