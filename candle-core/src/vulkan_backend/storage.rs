@@ -259,14 +259,6 @@ impl VulkanStorage {
         let lhs_dtype = self.dtype();
         let rhs_dtype = rhs.dtype();
 
-        // Only handle F32 for now
-        if lhs_dtype != DType::F32 || rhs_dtype != DType::F32 {
-            return Err(VulkanError::Message(format!(
-                "Unsupported dtype pair: {:?} {:?}",
-                lhs_dtype, rhs_dtype,
-            )))?;
-        }
-
         if let (Some(lhs_buffer), Some(rhs_buffer)) =
             ((*self.buffer).clone(), (*rhs.buffer).clone())
         {
@@ -1839,6 +1831,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
         let suffix = match (self.dtype, rhs.dtype) {
             (DType::F32, DType::F32) => "f32",
             (DType::I64, DType::I64) => "i64",
+            (DType::BF16, DType::BF16) => "bf16",
             _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, rhs.dtype),
         };
         let key = format!("{}_{}", B::NAME, suffix);

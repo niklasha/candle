@@ -1,4 +1,5 @@
 #version 450
+
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float: enable
@@ -7,13 +8,13 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 // Buffer bindings
 layout(set = 0, binding = 0) buffer LhsBuffer {
-    TYPE lhs_data[];
+    OUTER_TYPE lhs_data[];
 };
 layout(set = 0, binding = 1) buffer RhsBuffer {
-    TYPE rhs_data[];
+    OUTER_TYPE rhs_data[];
 };
 layout(set = 0, binding = 2) buffer OutputBuffer {
-    TYPE output_data[];
+    OUTER_TYPE output_data[];
 };
 layout(push_constant) uniform PushConstants {
     uint a_base;
@@ -25,6 +26,14 @@ layout(push_constant) uniform PushConstants {
     uvec4 b_shape;       // padded shape (unused dimensions set to 1)
     uvec4 b_stride;      // padded stride (unused dimensions set to 1)
 } pc;
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x) INNER_TYPE(x)
+#endif
 
 // This function converts a linear index to a physical index using the full
 // multi-dimensional layout. We assume row-major ordering.
@@ -94,42 +103,42 @@ void add_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index_a(idx);
     uint b_idx = get_strided_index_b(idx);
-    output_data[idx] = lhs_data[a_idx] + rhs_data[b_idx];
+    output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) + CAST_IN(rhs_data[b_idx]));
 }
 
 void sub_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index_a(idx);
     uint b_idx = get_strided_index_b(idx);
-    output_data[idx] = lhs_data[a_idx] - rhs_data[b_idx];
+    output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) - CAST_IN(rhs_data[b_idx]));
 }
 
 void div_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index_a(idx);
     uint b_idx = get_strided_index_b(idx);
-    output_data[idx] = lhs_data[a_idx] / rhs_data[b_idx];
+    output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) / CAST_IN(rhs_data[b_idx]));
 }
 
 void mul_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index_a(idx);
     uint b_idx = get_strided_index_b(idx);
-    output_data[idx] = lhs_data[a_idx] * rhs_data[b_idx];
+    output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) * CAST_IN(rhs_data[b_idx]));
 }
 
 void min_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index_a(idx);
     uint b_idx = get_strided_index_b(idx);
-    output_data[idx] = min(lhs_data[a_idx], rhs_data[b_idx]);
+    output_data[idx] = CAST_OUT(min(CAST_IN(lhs_data[a_idx]), CAST_IN(rhs_data[b_idx])));
 }
 
 void max_op() {
     uint idx = gl_GlobalInvocationID.x;
     uint a_idx = get_strided_index_a(idx);
     uint b_idx = get_strided_index_b(idx);
-    output_data[idx] = max(lhs_data[a_idx], rhs_data[b_idx]);
+    output_data[idx] = CAST_OUT(max(CAST_IN(lhs_data[a_idx]), CAST_IN(rhs_data[b_idx])));
 }
 
 // Conditional main() selection based on the define.
