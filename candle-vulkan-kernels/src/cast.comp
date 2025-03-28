@@ -67,6 +67,8 @@ uint get_strided_index(uint lin_idx) {
 }
 
 void main() {
+    uint total_elements = pc.shape.x * pc.shape.y * pc.shape.z * pc.shape.w;
     uint idx = get_strided_index(gl_GlobalInvocationID.x);
+    if (idx >= total_elements) return;
     output_data[idx] = DST_TYPE(CAST(input_data[idx]));
 }
