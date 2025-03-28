@@ -2,7 +2,6 @@
 
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::vulkan_backend::LockError;
 use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -1155,6 +1154,47 @@ impl VulkanStorage {
         Ok(output)
     }
 
+    fn where_cond_op_impl(
+        &self,
+        layout: &Layout,
+        cond: &Self,
+        t: &Self,
+        f: &Self,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<Self> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            elem_count: u32,
+        }
+
+        let elem_count = layout.shape().elem_count();
+        let device = self.device();
+        let new_storage = unsafe { device.alloc_uninit(layout.shape(), self.dtype)? };
+
+        let push_constants = PushConstants {
+            elem_count: elem_count as u32,
+        };
+
+        cond.pending_future.sync_if_needed()?;
+        t.pending_future.sync_if_needed()?;
+        f.pending_future.sync_if_needed()?;
+        new_storage.execute_compute_kernel(
+            pipeline,
+            vec![
+                (*cond.buffer).clone().unwrap(),
+                (*t.buffer).clone().unwrap(),
+                (*f.buffer).clone().unwrap(),
+            ],
+            vec![(*new_storage.buffer).clone().unwrap()],
+            [elem_count as u32, 1, 1],
+            push_constants,
+            false,
+        )?;
+
+        Ok(new_storage)
+    }
+
     pub fn layernorm_op_impl(
         &self,
         layout: &Layout,
@@ -1644,7 +1684,7 @@ macro_rules! fail {
     };
 }
 
-impl crate::backend::BackendStorage for VulkanStorage {
+impl BackendStorage for VulkanStorage {
     type Device = VulkanDevice;
 
     fn try_clone(&self, _: &Layout) -> Result<Self> {
@@ -1759,7 +1799,6 @@ impl crate::backend::BackendStorage for VulkanStorage {
 
         // Allocate new storage for the result.
         // We choose U32 to store 1 for true and 0 for false.
-        let elem_count = layout.shape().elem_count();
         let device = self.device();
         let new_storage = unsafe { device.alloc_uninit(layout.shape(), DType::U8)? };
 
@@ -1832,8 +1871,44 @@ impl crate::backend::BackendStorage for VulkanStorage {
         self.binary_op_impl(layout, rhs, rhs_layout, &pipeline)
     }
 
-    fn where_cond(&self, _: &Layout, _: &Self, _: &Layout, _: &Self, _: &Layout) -> Result<Self> {
-        fail!()
+    fn where_cond(
+        &self,
+        layout: &Layout,
+        t: &Self,
+        _t_l: &Layout,
+        f: &Self,
+        _f_l: &Layout,
+    ) -> Result<Self> {
+        let shape = layout.shape();
+        let dtype = t.dtype;
+        let buffer = unsafe { self.device.alloc_uninit(shape, dtype) }?;
+        if t.dtype() != f.dtype() {
+            crate::bail!(
+                "Invalid where: different dtypes for values {:?} != {:?}",
+                t.dtype(),
+                f.dtype()
+            );
+        }
+        let suffix = match (self.dtype, t.dtype()) {
+            (DType::U8, DType::F32) => "u8_f32",
+            (DType::U32, DType::F32) => "u32_f32",
+            (DType::U8, DType::BF16) => "u8_bf16",
+            (DType::U8, DType::F16) => "u8_f16",
+            (DType::U8, DType::I64) => "u8_i64",
+            (DType::U8, DType::U32) => "u8_u32",
+            (DType::U8, DType::U8) => "u8_u8",
+            (left, right) => crate::bail!("Vulkan where_cond {left:?} {right:?} not implemented"),
+        };
+        let key = format!("where_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key)
+            .map_err(VulkanError::from)?;
+
+        buffer.where_cond_op_impl(layout, self, t, f, &pipeline)?;
+
+        Ok(buffer)
     }
 
     fn conv1d(

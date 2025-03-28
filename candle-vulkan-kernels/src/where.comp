@@ -1,0 +1,32 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Buffer bindings
+layout(set = 0, binding = 0) buffer CondBuffer {
+    COND_TYPE cond[];
+};
+layout(set = 0, binding = 1) buffer TrueBuffer {
+    ARG_TYPE t[];
+};
+layout(set = 0, binding = 2) buffer FalseBuffer {
+    ARG_TYPE f[];
+};
+layout(set = 0, binding = 3) buffer OutputBuffer {
+    ARG_TYPE output_data[];
+};
+layout(push_constant) uniform PushConstants {
+    uint elem_count;
+} pc;
+
+// Conditional main() selection based on the define.
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.elem_count) { return; }
+    output_data[idx] = uint(cond[idx]) != 0 ? t[idx] : f[idx];
+}
