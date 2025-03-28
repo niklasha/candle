@@ -314,6 +314,12 @@ impl Kernels {
         kernels.insert("mul_f32".to_string(), mul_float::load(device.clone())?);
         kernels.insert("minimum_f32".to_string(), min_float::load(device.clone())?);
         kernels.insert("maximum_f32".to_string(), max_float::load(device.clone())?);
+        kernels.insert("add_bf16".to_string(), add_bf16::load(device.clone())?);
+        kernels.insert("sub_bf16".to_string(), sub_bf16::load(device.clone())?);
+        kernels.insert("div_bf16".to_string(), div_bf16::load(device.clone())?);
+        kernels.insert("mul_bf16".to_string(), mul_bf16::load(device.clone())?);
+        kernels.insert("minimum_bf16".to_string(), min_bf16::load(device.clone())?);
+        kernels.insert("maximum_bf16".to_string(), max_bf16::load(device.clone())?);
 
         kernels.insert("sum_partial_f32".to_string(), sum_partial_float::load(device.clone())?);
         kernels.insert("argmax_partial_f32".to_string(), argmax_partial_float::load(device.clone())?);
@@ -638,13 +644,13 @@ unary_kernels!(
 // );
 
 macro_rules! binary_kernels {
-    ($( ($mod:ident, $op:literal, $ty:literal) ),* $(,)?) => {
+    ($( ($mod:ident, $op:literal, $inner_type:literal, $outer_type:literal, $bf16:literal) ),* $(,)?) => {
         $(
             mod $mod {
                 vulkano_shaders::shader! {
                     ty: "compute",
                     path: "src/binary.comp",
-                    define: [("OP", $op), ("TYPE", $ty)]
+                    define: [("OP", $op), ("INNER_TYPE", $inner_type), ("OUTER_TYPE", $outer_type), ("BF16", $bf16)]
                 }
             }
         )*
@@ -652,12 +658,18 @@ macro_rules! binary_kernels {
 }
 
 binary_kernels!(
-    (add_float, "add_op", "float"),
-    (sub_float, "sub_op", "float"),
-    (div_float, "div_op", "float"),
-    (mul_float, "mul_op", "float"),
-    (min_float, "min_op", "float"),
-    (max_float, "max_op", "float"),
+    (add_float, "add_op", "float", "float", "0"),
+    (sub_float, "sub_op", "float", "float", "0"),
+    (div_float, "div_op", "float", "float", "0"),
+    (mul_float, "mul_op", "float", "float", "0"),
+    (min_float, "min_op", "float", "float", "0"),
+    (max_float, "max_op", "float", "float", "0"),
+    (add_bf16, "add_op", "float", "uint16_t", "1"),
+    (sub_bf16, "sub_op", "float", "uint16_t", "1"),
+    (div_bf16, "div_op", "float", "uint16_t", "1"),
+    (mul_bf16, "mul_op", "float", "uint16_t", "1"),
+    (min_bf16, "min_op", "float", "uint16_t", "1"),
+    (max_bf16, "max_op", "float", "uint16_t", "1"),
 );
 
 macro_rules! reduce_partial_kernels {
