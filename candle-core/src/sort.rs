@@ -1,4 +1,4 @@
-use crate::backend::{BackendDevice, BackendStorage};
+use crate::backend::BackendStorage;
 use crate::{DType, Result, Tensor};
 use rayon::prelude::*;
 

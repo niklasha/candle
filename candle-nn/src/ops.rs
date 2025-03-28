@@ -698,7 +698,7 @@ impl candle::CustomOp2 for RmsNorm {
         // Infer axis as input.rank - gamma.rank
         let axis = input_l.shape().rank() - gamma_l.shape().rank();
 
-        let output = input.rmsnorm_op_impl(input_l, gamma, gamma_l, &pipeline, axis, self.eps)?;
+        let output = input.rmsnorm_op_impl(input_l, gamma, &pipeline, axis, self.eps)?;
         Ok((output, input_l.shape().clone()))
     }
 }
@@ -956,7 +956,7 @@ impl candle::CustomOp3 for LayerNorm {
         gamma: &candle::VulkanStorage,
         gamma_l: &Layout,
         beta: &candle::VulkanStorage,
-        beta_l: &Layout,
+        _beta_l: &Layout,
     ) -> Result<(candle::VulkanStorage, Shape)> {
         let dtype = input.dtype();
         let key = match dtype {

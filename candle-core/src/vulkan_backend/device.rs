@@ -196,15 +196,12 @@ impl VulkanDevice {
             let future = command_buffer
                 .execute(self.queue.clone())
                 .map_err(VulkanError::CommandBufferExecError)?;
-
-            future
-                .then_signal_fence_and_flush()
-                .map_err(VulkanError::ValidatedVulkanError)?
-                .wait(None)
-                .map_err(VulkanError::ValidatedVulkanError)?;
+            let storage = VulkanStorage::new(Some(buffer.clone()), self.clone(), count, dtype);
+            storage.pending_future.set_future(Box::new(future))?;
+            Ok(storage)
+        } else {
+            Ok(VulkanStorage::new(buffer, self.clone(), count, dtype))
         }
-
-        Ok(VulkanStorage::new(buffer, self.clone(), count, dtype))
     }
 
     fn allocate_with_data<T>(&self, dtype: DType, data: &[T]) -> Result<VulkanStorage>

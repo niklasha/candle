@@ -2,9 +2,10 @@
 
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{bail, CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
+use crate::vulkan_backend::LockError;
+use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use vulkano::buffer::{BufferContents, Subbuffer};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract,
@@ -13,6 +14,49 @@ use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::device::DeviceOwned;
 use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint};
 use vulkano::sync::GpuFuture;
+
+pub struct GpuFutureHolder {
+    future: Arc<Mutex<Option<Box<dyn GpuFuture + Send>>>>,
+}
+
+impl fmt::Debug for GpuFutureHolder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuFutureHolder")
+            .field("future", &"<GpuFuture>")
+            .finish()
+    }
+}
+
+impl GpuFutureHolder {
+    pub fn new() -> Self {
+        Self {
+            future: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<Option<Box<dyn GpuFuture + Send>>>> {
+        self.future.lock().map_err(|e| VulkanError::from(e).into())
+    }
+
+    pub fn set_future(&self, future: Box<dyn GpuFuture + Send>) -> Result<()> {
+        let mut guard = self.lock()?;
+        *guard = Some(future);
+        Ok(())
+    }
+
+    pub fn sync_if_needed(&self) -> Result<()> {
+        let mut guard = self.lock()?;
+        if let Some(future) = guard.take() {
+            future
+                .then_signal_fence_and_flush()
+                .map_err(VulkanError::ValidatedVulkanError)?
+                .wait(None)
+                .map_err(VulkanError::ValidatedVulkanError)?;
+            *guard = None;
+        }
+        Ok(())
+    }
+}
 
 impl fmt::Display for CmpOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,6 +96,7 @@ pub struct VulkanStorage {
     count: usize,
     /// The dtype is kept since buffers are untyped.
     dtype: DType,
+    pub(crate) pending_future: Arc<GpuFutureHolder>,
 }
 
 impl VulkanStorage {
@@ -66,13 +111,12 @@ impl VulkanStorage {
             device,
             count,
             dtype,
+            pending_future: Arc::new(GpuFutureHolder::new()),
         }
     }
 
     pub fn to_cpu<T: BufferContents + Clone + Copy + Send>(&self) -> Result<Vec<T>> {
-        // self.pending_future
-        //     .sync_if_needed()
-        //     .map_err(VulkanError::from)?;
+        self.pending_future.sync_if_needed()?;
         self.device.to_cpu(self.buffer.clone())
     }
 
@@ -116,40 +160,31 @@ impl VulkanStorage {
                 dispatch_dims[2],
             ]
         };
-        unsafe {
-            builder
-                .bind_pipeline_compute(pipeline.clone())
-                .map_err(VulkanError::ValidationError)?
-                .bind_descriptor_sets(
-                    PipelineBindPoint::Compute,
-                    pipeline.layout().clone(),
-                    0,
-                    DescriptorSet::new(
-                        device.descriptor_set_allocator.clone(),
-                        pipeline.layout().set_layouts()[0].clone(),
-                        bindings,
-                        [],
-                    )
-                    .map_err(VulkanError::ValidatedVulkanError)?,
+        builder
+            .bind_pipeline_compute(pipeline.clone())
+            .map_err(VulkanError::ValidationError)?
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                pipeline.layout().clone(),
+                0,
+                DescriptorSet::new(
+                    device.descriptor_set_allocator.clone(),
+                    pipeline.layout().set_layouts()[0].clone(),
+                    bindings,
+                    [],
                 )
-                .map_err(VulkanError::ValidationError)?
-                .push_constants(pipeline.layout().clone(), 0, push_constants)
-                .map_err(VulkanError::ValidationError)?
-                .dispatch(dims)
-                .map_err(|e| VulkanError::ValidationError(e.into()))?;
-        }
+                .map_err(VulkanError::ValidatedVulkanError)?,
+            )
+            .map_err(VulkanError::ValidationError)?
+            .push_constants(pipeline.layout().clone(), 0, push_constants)
+            .map_err(VulkanError::ValidationError)?;
+        unsafe { builder.dispatch(dims) }.map_err(|e| VulkanError::ValidationError(e.into()))?;
 
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
         let future = command_buffer
             .execute(device.queue.clone())
             .map_err(VulkanError::CommandBufferExecError)?;
-
-        future
-            .then_signal_fence_and_flush()
-            .map_err(VulkanError::ValidatedVulkanError)?
-            .wait(None)
-            .map_err(VulkanError::ValidatedVulkanError)?;
-
+        self.pending_future.set_future(Box::new(future))?;
         Ok(())
     }
 
@@ -218,7 +253,8 @@ impl VulkanStorage {
                 shape: shape_arr,
                 stride: stride_arr,
             };
-            self.execute_compute_kernel(
+            self.pending_future.sync_if_needed()?;
+            let future = new_storage.execute_compute_kernel(
                 pipeline,
                 vec![buffer],
                 vec![(*new_storage.buffer).clone().unwrap()],
@@ -257,7 +293,6 @@ impl VulkanStorage {
         }
 
         let lhs_dtype = self.dtype();
-        let rhs_dtype = rhs.dtype();
 
         if let (Some(lhs_buffer), Some(rhs_buffer)) =
             ((*self.buffer).clone(), (*rhs.buffer).clone())
@@ -307,7 +342,10 @@ impl VulkanStorage {
                 b_shape: b_shape_arr,
                 b_stride: b_stride_arr,
             };
-            self.execute_compute_kernel(
+
+            self.pending_future.sync_if_needed()?;
+            rhs.pending_future.sync_if_needed()?;
+            new_storage.execute_compute_kernel(
                 pipeline,
                 vec![lhs_buffer, rhs_buffer],
                 vec![(*new_storage.buffer).clone().unwrap()],
@@ -426,8 +464,9 @@ impl VulkanStorage {
             let partial_values = unsafe { device.alloc_uninit(&buffer_shape, result_dtype)? };
             let partial_indices = unsafe { device.alloc_uninit(&buffer_shape, DType::U32)? };
 
+            self.pending_future.sync_if_needed()?;
             // Dispatch the partial reduction shader.
-            self.execute_compute_kernel(
+            partial_values.execute_compute_kernel(
                 partial_pipeline,
                 vec![buffer],
                 vec![
@@ -450,7 +489,8 @@ impl VulkanStorage {
                 let final_values = unsafe { device.alloc_uninit(&final_shape, result_dtype)? };
                 let final_indices = unsafe { device.alloc_uninit(&final_shape, DType::U32)? };
 
-                self.execute_compute_kernel(
+                partial_values.pending_future.sync_if_needed()?;
+                final_values.execute_compute_kernel(
                     combine_pipeline,
                     vec![
                         (*partial_values.buffer).clone().unwrap(),
@@ -480,6 +520,7 @@ impl VulkanStorage {
 
             // Allocate final storage.
             let mut new_storage = unsafe { device.alloc_uninit(&output_shape, result_dtype)? };
+            new_storage.pending_future = final_values.pending_future;
 
             // For operations like argmax/argmin we want indices,
             // for sum (and others) we want values.
@@ -577,32 +618,27 @@ impl VulkanStorage {
             alpha: alpha_f32,
         };
 
-        unsafe {
-            builder
-                .bind_pipeline_compute(pipeline.clone())
-                .map_err(VulkanError::ValidationError)?
-                .bind_descriptor_sets(
-                    PipelineBindPoint::Compute,
-                    pipeline.layout().clone(),
-                    0,
-                    pds,
-                )
-                .map_err(VulkanError::ValidationError)?
-                .push_constants(pipeline.layout().clone(), 0, push_constants)
-                .map_err(VulkanError::ValidationError)?
-                .dispatch([((elem_count as u32) + 255) / 256, 1, 1])
-                .map_err(VulkanError::ValidationError)?;
-        }
+        self.pending_future.sync_if_needed()?;
+        builder
+            .bind_pipeline_compute(pipeline.clone())
+            .map_err(VulkanError::ValidationError)?
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                pipeline.layout().clone(),
+                0,
+                pds,
+            )
+            .map_err(VulkanError::ValidationError)?
+            .push_constants(pipeline.layout().clone(), 0, push_constants)
+            .map_err(VulkanError::ValidationError)?;
+        unsafe { builder.dispatch([((elem_count as u32) + 255) / 256, 1, 1]) }
+            .map_err(VulkanError::ValidationError)?;
 
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
         let future = command_buffer
             .execute(device.queue.clone())
             .map_err(VulkanError::CommandBufferExecError)?;
-        future
-            .then_signal_fence_and_flush()
-            .map_err(VulkanError::ValidatedVulkanError)?
-            .wait(None)
-            .map_err(VulkanError::ValidatedVulkanError)?;
+        new_storage.pending_future.set_future(Box::new(future))?;
 
         Ok(new_storage)
     }
@@ -651,7 +687,9 @@ impl VulkanStorage {
                 output_strides: padded_out_strides,
             };
 
-            self.execute_compute_kernel(
+            self.pending_future.sync_if_needed()?;
+            index.pending_future.sync_if_needed()?;
+            dst.execute_compute_kernel(
                 pipeline,
                 vec![src_buf, idx_buf],
                 vec![dst_buf],
@@ -712,6 +750,9 @@ impl VulkanStorage {
                 output_strides: padded_output_strides,
             };
 
+            self.pending_future.sync_if_needed()?;
+            ids.pending_future.sync_if_needed()?;
+            src.pending_future.sync_if_needed()?;
             self.execute_compute_kernel(
                 pipeline,
                 vec![src_buf, idx_buf],
@@ -867,13 +908,15 @@ impl VulkanStorage {
             let dispatch_x = (total_out_elems + 255) / 256;
             let dispatch_dims = [dispatch_x, 1, 1];
 
-            self.execute_compute_kernel(
+            self.pending_future.sync_if_needed()?;
+            index.pending_future.sync_if_needed()?;
+            dst.execute_compute_kernel(
                 pipeline,
                 vec![src_buffer, index_buffer], // binding 0: source, binding 1: indices
                 vec![dst_buffer],
                 dispatch_dims,
                 push_constants,
-                true, // direct_dispatch true (we computed global size directly)
+                true,
             )?;
 
             Ok(dst.clone())
@@ -944,6 +987,9 @@ impl VulkanStorage {
                 ],
             };
 
+            self.pending_future.sync_if_needed()?;
+            index.pending_future.sync_if_needed()?;
+            src.pending_future.sync_if_needed()?;
             self.execute_compute_kernel(
                 pipeline,
                 vec![src_buffer, index_buffer],
@@ -1006,31 +1052,25 @@ impl VulkanStorage {
             CommandBufferUsage::OneTimeSubmit,
         )
         .map_err(VulkanError::ValidatedVulkanError)?;
-        unsafe {
-            builder
-                .bind_pipeline_compute(pipeline.clone())
-                .map_err(VulkanError::ValidationError)?
-                .bind_descriptor_sets(
-                    PipelineBindPoint::Compute,
-                    pipeline.layout().clone(),
-                    0,
-                    pds,
-                )
-                .map_err(VulkanError::ValidationError)?
-                .push_constants(pipeline.layout().clone(), 0, push_constants)
-                .map_err(VulkanError::ValidationError)?
-                .dispatch(dispatch_dims)
-                .map_err(VulkanError::ValidationError)?;
-        }
+        self.pending_future.sync_if_needed()?;
+        builder
+            .bind_pipeline_compute(pipeline.clone())
+            .map_err(VulkanError::ValidationError)?
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                pipeline.layout().clone(),
+                0,
+                pds,
+            )
+            .map_err(VulkanError::ValidationError)?
+            .push_constants(pipeline.layout().clone(), 0, push_constants)
+            .map_err(VulkanError::ValidationError)?;
+        unsafe { builder.dispatch(dispatch_dims) }.map_err(VulkanError::ValidationError)?;
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
         let future = command_buffer
             .execute(device.queue.clone())
             .map_err(VulkanError::CommandBufferExecError)?;
-        future
-            .then_signal_fence_and_flush()
-            .map_err(VulkanError::ValidatedVulkanError)?
-            .wait(None)
-            .map_err(VulkanError::ValidatedVulkanError)?;
+        dst.pending_future.set_future(Box::new(future))?;
         Ok(())
     }
 
@@ -1047,7 +1087,6 @@ impl VulkanStorage {
         rhs_layout: &Layout,
         dst: &mut Self,
         pipeline: &Arc<ComputePipeline>,
-        elem_count: usize,
     ) -> Result<()> {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1116,7 +1155,9 @@ impl VulkanStorage {
                 b_shape: b_shape_arr,
                 b_stride: b_stride_arr,
             };
-            self.execute_compute_kernel(
+            self.pending_future.sync_if_needed()?;
+            rhs.pending_future.sync_if_needed()?;
+            dst.execute_compute_kernel(
                 pipeline,
                 vec![lhs_buffer, rhs_buffer],
                 vec![dst_buffer],
@@ -1162,7 +1203,8 @@ impl VulkanStorage {
         let device = self.device();
         let output = unsafe { device.alloc_uninit(&layout.shape().clone().into(), DType::U32)? };
 
-        self.execute_compute_kernel(
+        self.pending_future.sync_if_needed()?;
+        output.execute_compute_kernel(
             &pipeline,
             vec![(*self.buffer).clone().unwrap()],
             vec![(*output.buffer).clone().unwrap()],
@@ -1219,7 +1261,10 @@ impl VulkanStorage {
             stride: stride_arr,
         };
 
-        self.execute_compute_kernel(
+        self.pending_future.sync_if_needed()?;
+        gamma.pending_future.sync_if_needed()?;
+        beta.pending_future.sync_if_needed()?;
+        new_storage.execute_compute_kernel(
             pipeline,
             vec![
                 (*self.buffer).clone().unwrap(),
@@ -1239,7 +1284,6 @@ impl VulkanStorage {
         &self,
         layout: &Layout,
         gamma: &VulkanStorage,
-        gamma_layout: &Layout,
         pipeline: &Arc<ComputePipeline>,
         axis: usize,
         eps: f32,
@@ -1279,7 +1323,9 @@ impl VulkanStorage {
         let output = unsafe { device.alloc_uninit(shape, self.dtype)? };
         let count = shape.elem_count();
 
-        self.execute_compute_kernel(
+        self.pending_future.sync_if_needed()?;
+        gamma.pending_future.sync_if_needed()?;
+        output.execute_compute_kernel(
             pipeline,
             vec![
                 (*self.buffer).clone().unwrap(),
@@ -1345,7 +1391,8 @@ impl VulkanStorage {
             }
         }
 
-        self.execute_compute_kernel(
+        self.pending_future.sync_if_needed()?;
+        output.execute_compute_kernel(
             pipeline,
             vec![(*self.buffer).clone().unwrap()],
             vec![(*output.buffer).clone().unwrap()],
@@ -1415,7 +1462,10 @@ impl VulkanStorage {
 
         let total_elems = layout.shape().elem_count() as u32;
 
-        self.execute_compute_kernel(
+        self.pending_future.sync_if_needed()?;
+        cos.pending_future.sync_if_needed()?;
+        sin.pending_future.sync_if_needed()?;
+        out.execute_compute_kernel(
             pipeline,
             vec![input_buf, cos_buf, sin_buf],
             vec![(*out.buffer).clone().unwrap()],
@@ -1478,8 +1528,12 @@ impl VulkanStorage {
         let half = shape[3] >> 1;
         let total_pairs = shape[0] * shape[1] * shape[2] * half;
 
+        self.pending_future.sync_if_needed()?;
+        cos.pending_future.sync_if_needed()?;
+        sin.pending_future.sync_if_needed()?;
+
         // Dispatch one thread per pair.
-        self.execute_compute_kernel(
+        out.execute_compute_kernel(
             pipeline,
             vec![input_buf, cos_buf, sin_buf],
             vec![(*out.buffer).clone().unwrap()],
@@ -1517,7 +1571,7 @@ impl VulkanStorage {
             let arg1 = arg1 as f32;
 
             let push_constants = PushConstants { seed, arg0, arg1 };
-            self.execute_compute_kernel(
+            new_storage.execute_compute_kernel(
                 pipeline,
                 vec![],
                 vec![(*new_storage.buffer).clone().unwrap()], // XXX
@@ -1607,7 +1661,10 @@ impl VulkanStorage {
             let wg_y = (m + tile_size - 1) / tile_size;
             let wg_z = b;
 
-            self.execute_compute_kernel(
+            self.pending_future.sync_if_needed()?;
+            rhs.pending_future.sync_if_needed()?;
+            dst.pending_future.sync_if_needed()?;
+            dst.execute_compute_kernel(
                 pipeline,
                 vec![lhs_buffer, rhs_buffer],
                 vec![(*dst.buffer).clone().unwrap()],
@@ -1768,14 +1825,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
         let new_storage = unsafe { device.alloc_uninit(layout.shape(), DType::U8)? };
 
         // Call the lower-level helper.
-        self.cmp_op_impl(
-            rhs,
-            layout,
-            rhs_layout,
-            &mut new_storage.clone(),
-            &pipeline,
-            elem_count,
-        )?;
+        self.cmp_op_impl(rhs, layout, rhs_layout, &mut new_storage.clone(), &pipeline)?;
         Ok(new_storage)
     }
 
@@ -2135,7 +2185,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
             .map_err(VulkanError::from)?;
 
         let shape = Shape::from(&[b, m, n]);
-        let dst = unsafe { self.device().zeros_impl(&shape, self.dtype())? };
+        let dst = self.device().zeros_impl(&shape, self.dtype())?;
 
         self.gemm_impl(rhs, &dst, lhs_l, rhs_l, &pipeline, (b, m, n, k))?;
 

@@ -229,9 +229,9 @@ impl candle::CustomOp3 for RotaryEmbI {
         src: &candle::VulkanStorage,
         l_src: &Layout,
         cos: &candle::VulkanStorage,
-        l_cos: &Layout,
+        _l_cos: &Layout,
         sin: &candle::VulkanStorage,
-        l_sin: &Layout,
+        _l_sin: &Layout,
     ) -> Result<(candle::VulkanStorage, Shape)> {
         let dtype = src.dtype();
         let suffix = match dtype {
@@ -540,9 +540,9 @@ impl candle::CustomOp3 for RotaryEmb {
         src: &candle::VulkanStorage,
         l_src: &Layout,
         cos: &candle::VulkanStorage,
-        l_cos: &Layout,
+        _l_cos: &Layout,
         sin: &candle::VulkanStorage,
-        l_sin: &Layout,
+        _l_sin: &Layout,
     ) -> Result<(candle::VulkanStorage, Shape)> {
         let dtype = src.dtype();
         let suffix = match dtype {
@@ -838,9 +838,9 @@ impl candle::CustomOp3 for RotaryEmbThd {
         src: &candle::VulkanStorage,
         l_src: &Layout,
         cos: &candle::VulkanStorage,
-        l_cos: &Layout,
+        _l_cos: &Layout,
         sin: &candle::VulkanStorage,
-        l_sin: &Layout,
+        _l_sin: &Layout,
     ) -> Result<(candle::VulkanStorage, Shape)> {
         let dtype = src.dtype();
         let suffix = match dtype {
