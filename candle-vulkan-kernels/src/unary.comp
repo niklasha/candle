@@ -64,29 +64,21 @@ uint get_strided_index(uint lin_idx) {
     return pc.base + phys_idx;
 }
 
-void neg_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void neg_op(uint idx, uint a_idx) {
     output_data[idx] = CAST_OUT(-CAST_IN(input_data[a_idx]));
 }
 
-void abs_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void abs_op(uint idx, uint a_idx) {
     output_data[idx] = CAST_OUT(abs(CAST_IN(input_data[a_idx])));
 }
 
-void sign_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void sign_op(uint idx, uint a_idx) {
     output_data[idx] = CAST_OUT(sign(CAST_IN(input_data[a_idx])));
 }
 
-void gelu_op() {
+void gelu_op(uint idx, uint a_idx) {
     const INNER_TYPE COEF_A = INNER_TYPE(0.79788456) + INNER_TYPE(0.000000000802865355);
     const INNER_TYPE COEF_B = INNER_TYPE(0.04471509) + INNER_TYPE(-0.0000000026068047);
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
     INNER_TYPE x = CAST_IN(input_data[a_idx]);
     INNER_TYPE x_cubed = x * x * x;
     INNER_TYPE inner = COEF_A * (x + COEF_B * x_cubed);
@@ -109,37 +101,27 @@ INNER_TYPE erf_approx(INNER_TYPE x) {
     return s * y;
 }
 
-void gelu_erf_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void gelu_erf_op(uint idx, uint a_idx) {
     INNER_TYPE x = CAST_IN(input_data[a_idx]);
     INNER_TYPE cdf = HALF * (ONE + erf_approx(x / sqrt(2.0)));
     output_data[idx] = CAST_OUT(x * cdf);
 }
 
-void erf_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void erf_op(uint idx, uint a_idx) {
     INNER_TYPE x = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(erf_approx(x));
 }
 
-void silu_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void silu_op(uint idx, uint a_idx) {
     INNER_TYPE x = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(x / (ONE + exp(-x)));
 }
 
-void ceil_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void ceil_op(uint idx, uint a_idx) {
     output_data[idx] = CAST_OUT(ceil(CAST_IN(input_data[a_idx])));
 }
 
-void floor_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void floor_op(uint idx, uint a_idx) {
     output_data[idx] = CAST_OUT(floor(CAST_IN(input_data[a_idx])));
 }
 
@@ -147,74 +129,59 @@ float c_round(float x) {
     return (x >= 0.0) ? floor(x + 0.5) : ceil(x - 0.5);
 }
 
-void round_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void round_op(uint idx, uint a_idx) {
     output_data[idx] = CAST_OUT(c_round(CAST_IN(input_data[a_idx])));
 }
 
-void sqr_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void sqr_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(data * data);
 }
 
-void sqrt_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void sqrt_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(sqrt(data));
 }
 
-void sin_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void sin_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(sin(data));
 }
 
-void cos_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void cos_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(cos(data));
 }
 
-void tan_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void tan_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(tan(data));
 }
 
-void sigmoid_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void sigmoid_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(1.0 / (1.0 + exp(-data)));
 }
 
-void exp_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void exp_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(exp(data));
 }
 
-void log_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void log_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(log(data));
 }
 
-void recip_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index(idx);
+void recip_op(uint idx, uint a_idx) {
     INNER_TYPE data = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(1.0 / data);
 }
 
-// Conditional main() selection based on the define.
-void main() { OP(); }
+void main() {
+    uint total_elems = pc.shape.x * pc.shape.y * pc.shape.z * pc.shape.w;
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= total_elems) { return; }
+    uint a_idx = get_strided_index(idx);
+    OP(idx, a_idx);
+}

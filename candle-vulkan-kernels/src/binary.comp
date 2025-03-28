@@ -99,47 +99,36 @@ uint get_strided_index_b(uint lin_idx) {
     return pc.b_base + phys_idx;
 }
 
-void add_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index_a(idx);
-    uint b_idx = get_strided_index_b(idx);
+void add_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) + CAST_IN(rhs_data[b_idx]));
 }
 
-void sub_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index_a(idx);
-    uint b_idx = get_strided_index_b(idx);
+void sub_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) - CAST_IN(rhs_data[b_idx]));
 }
 
-void div_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index_a(idx);
-    uint b_idx = get_strided_index_b(idx);
+void div_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) / CAST_IN(rhs_data[b_idx]));
 }
 
-void mul_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index_a(idx);
-    uint b_idx = get_strided_index_b(idx);
+void mul_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) * CAST_IN(rhs_data[b_idx]));
 }
 
-void min_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index_a(idx);
-    uint b_idx = get_strided_index_b(idx);
+void min_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(min(CAST_IN(lhs_data[a_idx]), CAST_IN(rhs_data[b_idx])));
 }
 
-void max_op() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint a_idx = get_strided_index_a(idx);
-    uint b_idx = get_strided_index_b(idx);
+void max_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(max(CAST_IN(lhs_data[a_idx]), CAST_IN(rhs_data[b_idx])));
 }
 
 // Conditional main() selection based on the define.
-void main() { OP(); }
+void main() {
+    uint total_elems = pc.a_shape.x * pc.a_shape.y * pc.a_shape.z * pc.a_shape.w;
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= total_elems) { return; }
+    uint a_idx = get_strided_index_a(idx);
+    uint b_idx = get_strided_index_b(idx);
+    OP(idx, a_idx, b_idx);
+}
