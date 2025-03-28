@@ -425,6 +425,7 @@ impl Kernels {
         kernels.insert ("copy2d_f32".to_string(), copy2d_float::load(device.clone())?);
         kernels.insert ("copy2d_u32".to_string(), copy2d_uint::load(device.clone())?);
         kernels.insert ("copy2d_i64".to_string(), copy2d_int64_t::load(device.clone())?);
+        kernels.insert ("copy2d_bf16".to_string(), copy2d_bf16::load(device.clone())?);
         kernels.insert ("copy_strided_src_f32".to_string(), copy_strided_src_float::load(device.clone())?);
         kernels.insert ("copy_strided_src_u32".to_string(), copy_strided_src_uint::load(device.clone())?);
         kernels.insert ("copy_strided_src_i64".to_string(), copy_strided_src_int64_t::load(device.clone())?);
@@ -904,6 +905,7 @@ copy2d_shaders!(
     (copy2d_float, "float"),
     (copy2d_uint, "uint"),
     (copy2d_int64_t, "int64_t"),
+    (copy2d_bf16, "uint16_t"),
 );
 
 macro_rules! copy_strided_src_kernels {
