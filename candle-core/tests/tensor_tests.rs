@@ -1,4 +1,5 @@
 use candle_core::{test_device, test_utils, DType, Device, IndexOp, Result, Tensor, D};
+use std::thread::sleep_ms;
 
 fn zeros(device: &Device) -> Result<()> {
     let tensor = Tensor::zeros((5, 2), DType::F32, device)?;
