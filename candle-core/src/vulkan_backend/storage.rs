@@ -2118,6 +2118,7 @@ impl crate::backend::BackendStorage for VulkanStorage {
             DType::F32 => "f32",
             DType::U32 => "u32",
             DType::I64 => "i64",
+            DType::BF16 => "bf16",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let key = format!("copy2d_{}", suffix);
