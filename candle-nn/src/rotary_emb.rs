@@ -200,6 +200,7 @@ impl candle::CustomOp3 for RotaryEmbI {
         Ok((out, l_src.shape().clone()))
     }
 
+    #[cfg(feature = "vulkan")]
     fn vulkan_fwd(
         &self,
         src: &candle::VulkanStorage,
@@ -482,6 +483,7 @@ impl candle::CustomOp3 for RotaryEmb {
         Ok((out, l_src.shape().clone()))
     }
 
+    #[cfg(feature = "vulkan")]
     fn vulkan_fwd(
         &self,
         src: &candle::VulkanStorage,
@@ -759,6 +761,7 @@ impl candle::CustomOp3 for RotaryEmbThd {
         Ok((out, l_src.shape().clone()))
     }
 
+    #[cfg(feature = "vulkan")]
     fn vulkan_fwd(
         &self,
         src: &candle::VulkanStorage,

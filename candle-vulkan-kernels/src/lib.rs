@@ -479,6 +479,14 @@ impl Kernels {
         kernels.insert("rope_i_f16".to_string(), rope_i_float16_t::load(device.clone())?);
         kernels.insert("rope_i_bf16".to_string(), rope_i_bf16::load(device.clone())?);
 
+        kernels.insert("where_u8_f32".to_string(), where_uint8_t_float::load(device.clone())?);
+        kernels.insert("where_u32_f32".to_string(), where_uint_float::load(device.clone())?);
+        kernels.insert("where_u8_bf16".to_string(), where_uint8_t_bf16::load(device.clone())?);
+        kernels.insert("where_u8_f16".to_string(), where_uint8_t_float16_t::load(device.clone())?);
+        kernels.insert("where_u8_i64".to_string(), where_uint8_t_int64_t::load(device.clone())?);
+        kernels.insert("where_u8_u32".to_string(), where_uint8_t_uint::load(device.clone())?);
+        kernels.insert("where_u8_u8".to_string(), where_uint8_t_uint8_t::load(device.clone())?);
+
         Ok(Self {
             kernels,
             pipelines: RwLock::new(HashMap::new()),
@@ -1121,6 +1129,30 @@ rope_i_kernels!(
     (rope_i_float, "float", "float", "0"),
     (rope_i_float16_t, "float", "float16_t", "0"),
     (rope_i_bf16, "float", "uint16_t", "1"),
+);
+
+macro_rules! where_kernels {
+    ($( ($mod:ident, $cond_type:literal, $arg_type:literal) ),* $(,)?) => {
+        $(
+            mod $mod {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    path: "src/where.comp",
+                    define: [("COND_TYPE", $cond_type), ("ARG_TYPE", $arg_type)]
+                }
+            }
+        )*
+    };
+}
+
+where_kernels!(
+    (where_uint8_t_float, "uint8_t", "float"),
+    (where_uint_float, "uint", "float"),
+    (where_uint8_t_bf16, "uint8_t", "uint16_t"),
+    (where_uint8_t_float16_t, "uint8_t", "float16_t"),
+    (where_uint8_t_int64_t, "uint8_t", "int64_t"),
+    (where_uint8_t_uint, "uint8_t", "uint"),
+    (where_uint8_t_uint8_t, "uint8_t", "uint8_t"),
 );
 
 // #[allow(clippy::too_many_arguments)]
