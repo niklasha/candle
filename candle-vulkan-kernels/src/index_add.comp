@@ -5,7 +5,9 @@
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float : enable
-#extension GL_EXT_shader_atomic_float : enable
+
+#include "common.comp"
+
 //#extension GL_EXT_shader_atomic_int64 : enable
 
 layout(local_size_x = 256) in;
@@ -17,7 +19,7 @@ layout(set = 0, binding = 1) buffer Indices {
     IDX_TYPE index_data[];
 };
 layout(set = 0, binding = 2) buffer Output {
-    TYPE output_data[];
+    ATOMIC_FLOAT32 output_data[];
 };
 
 layout(push_constant) uniform PushConstants {
@@ -50,5 +52,5 @@ void main() {
         dst_idx += coord[d] * output_strides[d];
     }
 
-    atomicAdd(output_data[dst_idx], input_data[linear_idx]);
+    ATOMIC_ADD(output_data[dst_idx], input_data[linear_idx]);
 }
