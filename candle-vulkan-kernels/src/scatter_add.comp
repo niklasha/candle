@@ -18,7 +18,7 @@ layout(set = 0, binding = 1) buffer Indices {
     IDX_TYPE index_data[];
 };
 layout(set = 0, binding = 2) buffer Output {
-    TYPE output_data[];
+    ATOMIC_FLOAT32 output_data[];
 };
 
 layout(push_constant) uniform PushConstants {
