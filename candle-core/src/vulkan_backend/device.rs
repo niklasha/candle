@@ -5,7 +5,6 @@ use crate::{CpuStorage, CpuStorageRef, DType, Result, Shape, VulkanError, Vulkan
 use bytemuck::Pod;
 use candle_vulkan_kernels::Kernels;
 use half::{bf16, f16};
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 use vulkano::buffer::allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
@@ -26,7 +25,6 @@ use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{
     AllocationCreateInfo, DeviceLayout, MemoryTypeFilter, StandardMemoryAllocator,
 };
-use vulkano::pipeline::compute::ComputePipeline;
 use vulkano::sync::GpuFuture;
 use vulkano::{DeviceSize, VulkanLibrary};
 
