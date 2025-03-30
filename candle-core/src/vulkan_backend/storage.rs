@@ -2086,7 +2086,23 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device()
             .kernels()
-            .load_pipeline(self.device().device(), &key, None)
+            .load_pipeline(
+                self.device().device(),
+                &key,
+                Some(&[(
+                    "FLOAT32_ATOMIC_ADD",
+                    if self
+                        .device
+                        .device()
+                        .enabled_features()
+                        .shader_buffer_float32_atomic_add
+                    {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                )]),
+            )
             .map_err(VulkanError::from)?;
 
         self.scatter_set_op_impl(layout, index, src, src_layout, &pipeline, dim)
