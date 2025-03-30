@@ -221,7 +221,7 @@ impl crate::CustomOp1 for ArgSort {
         let device = storage.device();
         let pipeline = device
             .kernels()
-            .load_pipeline(device.device(), &key)
+            .load_pipeline(device.device(), &key, None)
             .map_err(crate::Error::wrap)?;
         let out = storage.arg_sort_op_impl(layout, &pipeline, self.asc)?;
         Ok((out, layout.shape().clone()))
