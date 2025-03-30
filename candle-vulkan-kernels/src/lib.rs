@@ -69,9 +69,29 @@ impl KernelConfig {
     ) -> Result<Arc<ShaderModule>, Box<dyn std::error::Error>> {
         let full_path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), self.path);
         let shader_source = std::fs::read_to_string(full_path)?;
-        let mut compiler = shaderc::Compiler::new().ok_or("Failed to create shader compiler")?;
+        let compiler = shaderc::Compiler::new().ok_or("Failed to create shader compiler")?;
         let mut options =
             shaderc::CompileOptions::new().ok_or("Failed to create compile options")?;
+
+        options.set_include_callback(|requested, _include_type, source_path, _depth| {
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let full_source_path = if std::path::Path::new(source_path).is_absolute() {
+                std::path::Path::new(source_path).to_path_buf()
+            } else {
+                manifest_dir.join(source_path)
+            };
+            let base_dir = full_source_path.parent().unwrap_or(manifest_dir);
+            let include_path = base_dir.join(requested);
+            let canonical = std::fs::canonicalize(&include_path)
+                .map_err(|e| format!("Failed to canonicalize {}: {}", include_path.display(), e))?;
+            let content = std::fs::read_to_string(&canonical)
+                .map_err(|e| format!("Failed to read {}: {}", canonical.display(), e))?;
+            Ok(shaderc::ResolvedInclude {
+                resolved_name: canonical.to_string_lossy().into_owned(),
+                content,
+            })
+        });
+
         for (key, val) in &self.defines {
             options.add_macro_definition(key, Some(val));
         }
