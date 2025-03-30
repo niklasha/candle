@@ -227,7 +227,7 @@ impl candle::CustomOp3 for RotaryEmbI {
         let device = src.device();
         let pipeline = device
             .kernels()
-            .load_pipeline(device.device(), kernel)
+            .load_pipeline(device.device(), kernel, None)
             .map_err(candle::Error::wrap)?;
 
         let out = src.rope_i_op_impl(l_src, cos, sin, &pipeline)?;
@@ -507,7 +507,7 @@ impl candle::CustomOp3 for RotaryEmb {
         let device = src.device();
         let pipeline = device
             .kernels()
-            .load_pipeline(device.device(), kernel)
+            .load_pipeline(device.device(), kernel, None)
             .map_err(candle::Error::wrap)?;
 
         let out = src.rope_op_impl(l_src, cos, sin, &pipeline)?;
@@ -788,7 +788,7 @@ impl candle::CustomOp3 for RotaryEmbThd {
         let device = src.device();
         let pipeline = device
             .kernels()
-            .load_pipeline(device.device(), kernel)
+            .load_pipeline(device.device(), kernel, None)
             .map_err(candle::Error::wrap)?;
 
         let out = src.rope_op_impl(l_src, cos, sin, &pipeline)?;
