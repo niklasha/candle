@@ -245,7 +245,7 @@ impl candle::CustomOp1 for Sigmoid {
         let device = storage.device();
         let pipeline = device
             .kernels()
-            .load_pipeline(device.device(), kernel)
+            .load_pipeline(device.device(), kernel, None)
             .map_err(candle::Error::wrap)?;
         let out = storage.unary_op_impl(layout, &pipeline, dtype)?;
         Ok((out, layout.shape().clone()))
@@ -475,7 +475,7 @@ impl candle::CustomOp1 for SoftmaxLastDim {
         let device = storage.device();
         let pipeline = device
             .kernels()
-            .load_pipeline(device.device(), kernel)
+            .load_pipeline(device.device(), kernel, None)
             .map_err(candle::Error::wrap)?;
         let out = storage.softmax_last_dim_op_impl(layout, &pipeline)?;
         Ok((out, layout.shape().clone()))
@@ -692,7 +692,7 @@ impl candle::CustomOp2 for RmsNorm {
         let device = input.device();
         let pipeline = device
             .kernels()
-            .load_pipeline(device.device(), key)
+            .load_pipeline(device.device(), key, None)
             .map_err(candle::Error::wrap)?;
 
         // Infer axis as input.rank - gamma.rank
@@ -969,7 +969,7 @@ impl candle::CustomOp3 for LayerNorm {
         let device = input.device();
         let pipeline = device
             .kernels()
-            .load_pipeline(device.device(), key)
+            .load_pipeline(device.device(), key, None)
             .map_err(candle::Error::wrap)?;
 
         let axis = input_l.shape().rank() - gamma_l.shape().rank();
