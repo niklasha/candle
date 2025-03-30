@@ -261,6 +261,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             khr_storage_buffer_storage_class: true,
             ..DeviceExtensions::empty()
         };
+        let supported_features = physical_device.supported_features();
         let required_features = DeviceFeatures {
             uniform_and_storage_buffer8_bit_access: true,
             storage_buffer16_bit_access: true,
@@ -268,7 +269,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             shader_int16: true,
             shader_int64: true,
             shader_float16: true,
-            shader_buffer_float32_atomic_add: true,
+            shader_buffer_float32_atomic_add: supported_features.shader_buffer_float32_atomic_add,
             ..DeviceFeatures::empty()
         };
 

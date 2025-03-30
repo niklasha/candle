@@ -1,0 +1,25 @@
+#if FLOAT32_ATOMIC_ADD
+#extension GL_EXT_shader_atomic_float : enable
+#define ATOMIC_FLOAT32 float
+#define ATOMIC_ADD(sum, term) atomicAdd((sum), (term))
+#else
+#define ATOMIC_FLOAT32 uint
+// Emulate atomicAdd with a CAS loop.
+// "sum" needs to be a lhs without side-effects
+#define ATOMIC_ADD(sum, term) {                                             \
+    uint oldBits = atomicCompSwap((sum), 0, 0);                             \
+    float oldVal = uintBitsToFloat(oldBits);                                \
+    float addVal = (term);                                                  \
+    float newVal;                                                           \
+    while (true) {                                                          \
+        newVal = oldVal + addVal;                                           \
+        uint newBits = floatBitsToUint(newVal);                             \
+        uint prevBits = atomicCompSwap((sum), oldBits, newBits);            \
+        if (prevBits == oldBits) {                                          \
+            break;                                                          \
+        }                                                                   \
+        oldBits = prevBits;                                                 \
+        oldVal = uintBitsToFloat(oldBits);                                  \
+    }                                                                       \
+}
+#endif
