@@ -5,8 +5,9 @@
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float : enable
-#extension GL_EXT_shader_atomic_float : enable
 #extension GL_EXT_shader_atomic_int64 : enable
+
+#include "common.comp"
 
 layout(local_size_x = 256) in;
 
@@ -49,5 +50,5 @@ void main() {
         dst_idx += coord[d] * output_strides[d];
     }
 
-    atomicAdd(output_data[dst_idx], input_data[gid]);
+    ATOMIC_ADD(output_data[dst_idx], input_data[gid]);
 }
