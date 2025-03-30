@@ -318,6 +318,55 @@ impl Kernels {
                 ("BF16", "0")
             );
             configs.insert(name, config);
+            let (name, config) = register_kernel!("sin_f32", "src/unary.comp",
+                ("OP", "sin_op"),
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("cos_f32", "src/unary.comp",
+                ("OP", "cos_op"),
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("tan_f32", "src/unary.comp",
+                ("OP", "tan_op"),
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("sigmoid_f32", "src/unary.comp",
+                ("OP", "sigmoid_op"),
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("exp_f32", "src/unary.comp",
+                ("OP", "exp_op"),
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("log_f32", "src/unary.comp",
+                ("OP", "log_op"),
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("recip_f32", "src/unary.comp",
+                ("OP", "recip_op"),
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
 
             // F16 variants:
             let (name, config) = register_kernel!("neg_f16", "src/unary.comp",
