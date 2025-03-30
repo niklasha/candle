@@ -1721,7 +1721,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &format!("affine_{}", suffix))
+            .load_pipeline(self.device.device(), &format!("affine_{}", suffix), None)
             .map_err(VulkanError::from)?;
         self.affine_elu_op_impl(layout, &pipeline, mul, add, 0.0)
     }
@@ -1739,7 +1739,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &format!("elu_{}", suffix))
+            .load_pipeline(self.device.device(), &format!("elu_{}", suffix), None)
             .map_err(VulkanError::from)?;
         self.affine_elu_op_impl(layout, &pipeline, 0.0, 0.0, alpha)
     }
@@ -1756,13 +1756,13 @@ impl BackendStorage for VulkanStorage {
                 let partial_pipeline = self
                     .device
                     .kernels()
-                    .load_pipeline(self.device.device(), &partial_key)
+                    .load_pipeline(self.device.device(), &partial_key, None)
                     .map_err(VulkanError::from)?;
                 let combine_key = format!("{}_combine_{}", op.name(), suffix);
                 let combine_pipeline = self
                     .device
                     .kernels()
-                    .load_pipeline(self.device.device(), &combine_key)
+                    .load_pipeline(self.device.device(), &combine_key, None)
                     .map_err(VulkanError::from)?;
                 self.reduce_op_impl(layout, s, &partial_pipeline, &combine_pipeline, false)
             }
@@ -1771,13 +1771,13 @@ impl BackendStorage for VulkanStorage {
                 let partial_pipeline = self
                     .device
                     .kernels()
-                    .load_pipeline(self.device.device(), &partial_key)
+                    .load_pipeline(self.device.device(), &partial_key, None)
                     .map_err(VulkanError::from)?;
                 let combine_key = format!("{}_combine_{}", op.name(), suffix);
                 let combine_pipeline = self
                     .device
                     .kernels()
-                    .load_pipeline(self.device.device(), &combine_key)
+                    .load_pipeline(self.device.device(), &combine_key, None)
                     .map_err(VulkanError::from)?;
                 self.reduce_op_impl(layout, s, &partial_pipeline, &combine_pipeline, true)
             }
@@ -1794,7 +1794,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         // Allocate new storage for the result.
@@ -1828,7 +1828,7 @@ impl BackendStorage for VulkanStorage {
             let pipeline = self
                 .device
                 .kernels()
-                .load_pipeline(self.device.device(), kernel)
+                .load_pipeline(self.device.device(), kernel, None)
                 .map_err(VulkanError::from)?;
             self.unary_op_impl(layout, &pipeline, dtype)
         }
@@ -1845,7 +1845,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
         self.unary_op_impl(layout, &pipeline, self.dtype())
     }
@@ -1866,7 +1866,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
         self.binary_op_impl(layout, rhs, rhs_layout, &pipeline)
     }
@@ -1903,7 +1903,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         buffer.where_cond_op_impl(layout, self, t, f, &pipeline)?;
@@ -1990,7 +1990,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         let dst = unsafe { self.device().alloc_uninit(&out_shape.into(), self.dtype)? };
@@ -2025,7 +2025,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device()
             .kernels()
-            .load_pipeline(self.device().device(), &key)
+            .load_pipeline(self.device().device(), &key, None)
             .map_err(VulkanError::from)?;
 
         self.scatter_add_op_impl(layout, index, src, src_layout, &pipeline, dim)
@@ -2083,7 +2083,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         self.index_select_op_impl(&dst, ids, src_layout, ids_layout, &pipeline, dim)
@@ -2136,7 +2136,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         // Call the low-level op executor
@@ -2162,7 +2162,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         let shape = Shape::from(&[b, m, n]);
@@ -2185,7 +2185,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         #[repr(C)]
@@ -2250,7 +2250,7 @@ impl BackendStorage for VulkanStorage {
         let pipeline = self
             .device
             .kernels()
-            .load_pipeline(self.device.device(), &key)
+            .load_pipeline(self.device.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         #[repr(C)]
