@@ -312,7 +312,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             StandardDescriptorSetAllocatorCreateInfo::default(),
         ));
 
-        let kernels = Arc::new(Kernels::new(device.clone()).map_err(VulkanError::from)?);
+        let kernels = Arc::new(Kernels::new().map_err(VulkanError::from)?);
 
         // // Initialize zero-init compute pipeline
         // let zero_init_pipeline = {
@@ -452,7 +452,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
         let key = format!("rand_uniform_{}", suffix);
         let pipeline = self
             .kernels()
-            .load_pipeline(self.device(), &key)
+            .load_pipeline(self.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         let num_elements = shape.elem_count();
@@ -481,7 +481,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
         let key = format!("rand_normal_{}", suffix);
         let pipeline = self
             .kernels()
-            .load_pipeline(self.device(), &key)
+            .load_pipeline(self.device(), &key, None)
             .map_err(VulkanError::from)?;
 
         let num_elements = shape.elem_count();
