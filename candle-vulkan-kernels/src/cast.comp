@@ -5,6 +5,10 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float: enable
 
+layout(local_size_x = 256) in;
+
+#include "common.comp"
+
 #if SRC_BF16
     #define CAST(x) uintBitsToFloat(uint(x) << 16u)
 #endif
@@ -67,7 +71,7 @@ uint get_strided_index(uint lin_idx) {
 
 void main() {
     uint total_elements = pc.shape.x * pc.shape.y * pc.shape.z * pc.shape.w;
-    uint idx = get_strided_index(gl_GlobalInvocationID.x);
+    uint idx = get_strided_index(global_linear_id());
     if (idx >= total_elements) return;
     output_data[idx] = DST_TYPE(CAST(input_data[idx]));
 }

@@ -10,7 +10,6 @@ use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract,
 };
 use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
-use vulkano::device::DeviceOwned;
 use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint};
 use vulkano::sync::GpuFuture;
 
@@ -153,11 +152,14 @@ impl VulkanStorage {
         let dims = if direct_dispatch {
             dispatch_dims
         } else {
-            [
-                (dispatch_dims[0] + 255) / 256,
-                dispatch_dims[1],
-                dispatch_dims[2],
-            ]
+            let total_threads = dispatch_dims[0];
+            let threads_per_group = 256;
+            let max_counts = device
+                .device()
+                .physical_device()
+                .properties()
+                .max_compute_work_group_count;
+            Self::compute_3d_dispatch_dims(total_threads, threads_per_group, max_counts)
         };
         builder
             .bind_pipeline_compute(pipeline.clone())
@@ -177,7 +179,14 @@ impl VulkanStorage {
             .map_err(VulkanError::ValidationError)?
             .push_constants(pipeline.layout().clone(), 0, push_constants)
             .map_err(VulkanError::ValidationError)?;
-        unsafe { builder.dispatch(dims) }.map_err(|e| VulkanError::ValidationError(e.into()))?;
+        unsafe { builder.dispatch(dims) }
+            .inspect_err(|e| {
+                eprintln!("{:?}", dims);
+                if dims[0] > 65536 {
+                    panic!("POFF");
+                }
+            })
+            .map_err(|e| VulkanError::ValidationError(e.into()))?;
 
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
         let future = command_buffer
@@ -185,6 +194,34 @@ impl VulkanStorage {
             .map_err(VulkanError::CommandBufferExecError)?;
         self.pending_future.set_future(Box::new(future))?;
         Ok(())
+    }
+
+    fn compute_3d_dispatch_dims(
+        total_threads: u32,
+        threads_per_group: u32,
+        max_group_count: [u32; 3],
+    ) -> [u32; 3] {
+        let total_groups = (total_threads + threads_per_group - 1) / threads_per_group;
+
+        let max_x = max_group_count[0].min(65535); // Vulkan spec limit
+        let max_y = max_group_count[1];
+        let max_z = max_group_count[2];
+
+        let mut x = total_groups.min(max_x);
+        let mut y = 1;
+        let mut z = 1;
+        let mut remaining = total_groups / x;
+
+        if remaining > 1 {
+            y = remaining.min(max_y);
+            remaining /= y;
+
+            if remaining > 1 {
+                z = remaining.min(max_z);
+            }
+        }
+
+        [x, y, z]
     }
 
     // XXX This is an in-place version, which may be faster for some ops.
@@ -235,7 +272,9 @@ impl VulkanStorage {
             let mut shape_arr = [1u32; 4];
             let mut stride_arr = [1u32; 4];
             for i in 0..shape_slice.rank().min(4) {
-                shape_arr[i] = (shape_slice.dim(i).unwrap())
+                shape_arr[i] = shape_slice
+                    .dim(i)
+                    .unwrap()
                     .try_into()
                     .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
             }
