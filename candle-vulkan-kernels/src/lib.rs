@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, TryLockError};
 use vulkano::device::Device;
 use vulkano::pipeline::{ComputePipeline, PipelineLayout, PipelineShaderStageCreateInfo};
 use vulkano::pipeline::compute::ComputePipelineCreateInfo;
@@ -30,10 +30,26 @@ impl DType {
     }
 }
 
+/// Simple way to catch lock error without
+/// depending on T
+#[derive(thiserror::Error, Debug)]
+pub enum LockError {
+    #[error("{0}")]
+    Poisoned(String),
+    #[error("Would block")]
+    WouldBlock,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum VulkanKernelError {
-    #[error("Could not lock kernel map: {0}")]
-    LockError(String),
+    #[error("{0}")]
+    Message(String),
+    #[error("{0:?}")]
+    LockError(#[from] LockError),
+    #[error("{0:?}")]
+    IoError(#[from] std::io::Error),
+    #[error("{0:?}")]
+    ShadercError(#[from] shaderc::Error),
     #[error("Error while loading library: {0}")]
     LoadLibraryError(String),
     #[error("Error while loading function: {0:?}")]
@@ -46,9 +62,30 @@ pub enum VulkanKernelError {
     ValidatedVulkanError(#[from] vulkano::Validated<vulkano::VulkanError>),
 }
 
-impl<T> From<std::sync::PoisonError<T>> for VulkanKernelError {
-    fn from(e: std::sync::PoisonError<T>) -> Self {
-        Self::LockError(e.to_string())
+impl From<String> for VulkanKernelError {
+    fn from(e: String) -> Self {
+        VulkanKernelError::Message(e)
+    }
+}
+
+impl From<&str> for VulkanKernelError {
+    fn from(e: &str) -> Self {
+        VulkanKernelError::Message(e.to_string())
+    }
+}
+
+impl<T> From<TryLockError<T>> for VulkanKernelError {
+    fn from(value: TryLockError<T>) -> Self {
+        match value {
+            TryLockError::Poisoned(p) => VulkanKernelError::LockError(LockError::Poisoned(p.to_string())),
+            TryLockError::WouldBlock => VulkanKernelError::LockError(LockError::WouldBlock),
+        }
+    }
+}
+
+impl<T> From<PoisonError<T>> for VulkanKernelError {
+    fn from(p: PoisonError<T>) -> Self {
+        VulkanKernelError::LockError(LockError::Poisoned(p.to_string()))
     }
 }
 
@@ -66,12 +103,12 @@ impl KernelConfig {
         &self,
         device: Arc<Device>,
         additional: Option<&[(&str, &str)]>,
-    ) -> Result<Arc<ShaderModule>, Box<dyn std::error::Error>> {
+    ) -> Result<Arc<ShaderModule>, VulkanKernelError> {
         let full_path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), self.path);
-        let shader_source = std::fs::read_to_string(full_path)?;
-        let compiler = shaderc::Compiler::new().ok_or("Failed to create shader compiler")?;
+        let shader_source = std::fs::read_to_string(full_path).map_err(VulkanKernelError::IoError)?;
+        let compiler = shaderc::Compiler::new().ok_or(VulkanKernelError::from("Failed to create shader compiler"))?;
         let mut options =
-            shaderc::CompileOptions::new().ok_or("Failed to create compile options")?;
+            shaderc::CompileOptions::new().ok_or(VulkanKernelError::from("Failed to create compile options"))?;
 
         options.set_include_callback(|requested, _include_type, source_path, _depth| {
             let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -106,7 +143,7 @@ impl KernelConfig {
             self.path,
             "main",
             Some(&options),
-        )?;
+        ).map_err(VulkanKernelError::ShadercError)?;
         let module = unsafe {
             ShaderModule::new(device, vulkano::shader::ShaderModuleCreateInfo::new(compiled_shader.as_binary()))
         }?;
@@ -1545,18 +1582,18 @@ impl Kernels {
         device: Arc<Device>,
         name: &str,
         additional: Option<&[(&str, &str)]>,
-    ) -> Result<Arc<ShaderModule>, Box<dyn std::error::Error + '_>> {
+    ) -> Result<Arc<ShaderModule>, VulkanKernelError> {
         // First, try to find it in the compiled cache.
-        if let Some(module) = self.compiled.read()?.get(name).cloned() {
+        if let Some(module) = self.compiled.read().map_err(VulkanKernelError::from)?.get(name).cloned() {
             return Ok(module);
         }
         // Otherwise, look up its config.
         let config = self.configs.get(name)
-            .ok_or_else(|| format!("Kernel config for '{}' not found", name))?;
+            .ok_or_else(|| VulkanKernelError::Message(format!("Kernel config for '{}' not found", name)))?;
         // Compile the module.
         let module = config.compile(device.clone(), additional)?;
         // Insert into the cache.
-        self.compiled.write()?.insert(name.to_string(), module.clone());
+        self.compiled.write().map_err(VulkanKernelError::from)?.insert(name.to_string(), module.clone());
         Ok(module)
     }
 
@@ -1568,8 +1605,7 @@ impl Kernels {
         additional_defines: Option<&[(&str, &str)]>,
     ) -> Result<Arc<ComputePipeline>, VulkanKernelError> {
         // First, get (or compile) the shader module.
-        let shader_module = self.load_shader(device.clone(), shader_name, additional_defines)
-            .map_err(|e| VulkanKernelError::LoadLibraryError(e.to_string()))?;
+        let shader_module = self.load_shader(device.clone(), shader_name, additional_defines)?;
 
         // Check if the pipeline is already cached.
         let mut pipelines = self.pipelines.write()?;
