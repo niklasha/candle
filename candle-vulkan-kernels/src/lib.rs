@@ -1133,64 +1133,55 @@ impl Kernels {
             let (name, config) = register_kernel!("index_add_u8_u32", "src/index_add.comp",
                 ("IDX_TYPE", "uint8_t"),
                 ("TYPE", "uint"),
-                ("BF16", "0"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "0")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("index_add_u8_bf16", "src/index_add.comp",
                 ("IDX_TYPE", "uint8_t"),
                 ("TYPE", "float"),
-                ("BF16", "1"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "1")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("index_add_u8_f32", "src/index_add.comp",
                 ("IDX_TYPE", "uint8_t"),
                 ("TYPE", "float"),
-                ("BF16", "0"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "0")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("index_add_u32_u32", "src/index_add.comp",
                 ("IDX_TYPE", "uint"),
                 ("TYPE", "uint"),
-                ("BF16", "0"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "0")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("index_add_u32_bf16", "src/index_add.comp",
                 ("IDX_TYPE", "uint"),
                 ("TYPE", "float"),
-                ("BF16", "1"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "1")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("index_add_u32_f32", "src/index_add.comp",
                 ("IDX_TYPE", "uint"),
                 ("TYPE", "float"),
-                ("BF16", "0"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "0")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("index_add_i64_u32", "src/index_add.comp",
                 ("IDX_TYPE", "int64_t"),
                 ("TYPE", "uint"),
-                ("BF16", "0"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "0")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("index_add_i64_bf16", "src/index_add.comp",
                 ("IDX_TYPE", "int64_t"),
                 ("TYPE", "float"),
-                ("BF16", "1"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "1")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("index_add_i64_f32", "src/index_add.comp",
                 ("IDX_TYPE", "int64_t"),
                 ("TYPE", "float"),
-                ("BF16", "0"),
-                ("ATOMIC_FLOAT32_ADD", "0")
+                ("BF16", "0")
             );
             configs.insert(name, config);
         }
