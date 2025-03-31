@@ -28,7 +28,6 @@
         }                                                                       \
     }
   #endif
-#endif
 
 uint global_linear_id() {
     uvec3 gid = gl_GlobalInvocationID;
