@@ -3,6 +3,10 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float: enable
 
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include "common.comp"
+
 #if BF16
     #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
     #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
@@ -10,9 +14,6 @@
     #define CAST_OUT(x) OUTER_TYPE(x)
     #define CAST_IN(x) INNER_TYPE(x)
 #endif
-
-// Workgroup size: 1 thread per row
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant) uniform PushConstants {
     uint base_offset;
@@ -36,7 +37,7 @@ layout(set = 0, binding = 2) writeonly buffer OutputBuffer {
 };
 
 void main() {
-    uint row = gl_GlobalInvocationID.x;
+    uint row = global_linear_id();
     uint rank = pc.rank;
     uint axis = pc.axis;
     uint offset = pc.base_offset;

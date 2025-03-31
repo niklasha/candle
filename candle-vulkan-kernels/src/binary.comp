@@ -5,6 +5,8 @@
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
+#include "common.comp"
+
 // Buffer bindings
 layout(set = 0, binding = 0) buffer LhsBuffer {
     OUTER_TYPE lhs_data[];
@@ -125,7 +127,7 @@ void max_op(uint idx, uint a_idx, uint b_idx) {
 // Conditional main() selection based on the define.
 void main() {
     uint total_elems = pc.a_shape.x * pc.a_shape.y * pc.a_shape.z * pc.a_shape.w;
-    uint idx = gl_GlobalInvocationID.x;
+    uint idx = global_linear_id();
     if (idx >= total_elems) { return; }
     uint a_idx = get_strided_index_a(idx);
     uint b_idx = get_strided_index_b(idx);
