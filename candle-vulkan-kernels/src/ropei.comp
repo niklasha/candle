@@ -2,7 +2,6 @@
 
 #extension GL_EXT_shader_explicit_arithmetic_types : require
 #extension GL_EXT_shader_16bit_storage : require
-#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 
 // Each invocation handles one pair: total pairs = B * H * T * (D/2)
 layout(local_size_x = 256) in;
