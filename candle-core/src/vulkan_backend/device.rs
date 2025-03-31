@@ -268,7 +268,7 @@ impl crate::backend::BackendDevice for VulkanDevice {
             shader_int8: true,
             shader_int16: true,
             shader_int64: true,
-            shader_float16: true,
+            shader_float16: supported_features.shader_float16,
             shader_buffer_float32_atomic_add: supported_features.shader_buffer_float32_atomic_add,
             ..DeviceFeatures::empty()
         };
