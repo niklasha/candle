@@ -29,3 +29,19 @@
     }
   #endif
 #endif
+
+uint global_linear_id() {
+    uvec3 gid = gl_GlobalInvocationID;
+    uvec3 num_groups = gl_NumWorkGroups;
+    uvec3 group_size = gl_WorkGroupSize;
+
+    uint groups_per_row = num_groups.x;
+    uint groups_per_plane = num_groups.x * num_groups.y;
+
+    return gid.x
+        + gid.y * group_size.x * groups_per_row
+        + gid.z * group_size.x * groups_per_plane;
+}
+
+#endif
+

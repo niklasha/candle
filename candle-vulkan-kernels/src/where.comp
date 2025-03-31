@@ -6,6 +6,8 @@
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
+#include "common.comp"
+
 // Buffer bindings
 layout(set = 0, binding = 0) buffer CondBuffer {
     COND_TYPE cond[];
@@ -25,7 +27,7 @@ layout(push_constant) uniform PushConstants {
 
 // Conditional main() selection based on the define.
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
+    uint idx = global_linear_id();
     if (idx >= pc.elem_count) { return; }
     output_data[idx] = uint(cond[idx]) != 0 ? t[idx] : f[idx];
 }

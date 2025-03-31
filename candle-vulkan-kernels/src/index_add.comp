@@ -5,11 +5,11 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float : enable
 
+layout(local_size_x = 256) in;
+
 #include "common.comp"
 
 //#extension GL_EXT_shader_atomic_int64 : enable
-
-layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) buffer Input {
     TYPE input_data[];
@@ -30,7 +30,7 @@ layout(push_constant) uniform PushConstants {
 };
 
 void main() {
-    uint linear_idx = gl_GlobalInvocationID.x;
+    uint linear_idx = global_linear_id();
     if (linear_idx >= total_src_elems) return;
 
     // Decode src coordinate

@@ -6,6 +6,8 @@
 // Each invocation handles one pair: total pairs = B * H * T * (D/2)
 layout(local_size_x = 256) in;
 
+#include "common.comp"
+
 layout(push_constant) uniform PushConstants {
     // shape: (B, H, T, D), with D even.
     uvec4 shape;
@@ -33,7 +35,7 @@ void main() {
     // Number of pairs per (b,h,t) is half the embedding dimension.
     uint half_dim = pc.shape.w >> 1;  // D/2
     uint total_pairs = pc.shape.x * pc.shape.y * pc.shape.z * half_dim;
-    uint gid = gl_GlobalInvocationID.x;
+    uint gid = global_linear_id();
     if(gid >= total_pairs) return;
 
     // Decompose gid into (b, h, t, pair)

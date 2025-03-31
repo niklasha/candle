@@ -3,6 +3,10 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float: enable
 
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include "common.comp"
+
 #if BF16
     #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
     #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
@@ -11,9 +15,6 @@
     #define CAST_IN(x) INNER_TYPE(x)
 #endif
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-// Buffer bindings
 layout(set = 0, binding = 0) buffer InputBuffer {
     OUTER_TYPE input_data[];
 };
@@ -179,7 +180,7 @@ void recip_op(uint idx, uint a_idx) {
 
 void main() {
     uint total_elems = pc.shape.x * pc.shape.y * pc.shape.z * pc.shape.w;
-    uint idx = gl_GlobalInvocationID.x;
+    uint idx = global_linear_id();
     if (idx >= total_elems) { return; }
     uint a_idx = get_strided_index(idx);
     OP(idx, a_idx);

@@ -2,8 +2,9 @@
 
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
 
-// Use a 256-thread 1D workgroup.
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include "common.comp"
 
 layout(set = 0, binding = 0) buffer OutputBuffer {
     float values[];
@@ -53,7 +54,7 @@ uint64_t pcg32_advance(uint64_t state, uint64_t delta) {
 }
 
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
+    uint idx = global_linear_id();
 
     // Each thread computes its own local RNG state by jumping ahead by its global index.
     uint64_t localState = pcg32_advance(pc.globalSeed, uint64_t(idx));

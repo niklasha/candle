@@ -5,6 +5,8 @@
 
 layout(local_size_x = 256) in;
 
+#include "common.comp"
+
 layout(push_constant) uniform PushConstants {
     uvec4 shape;
     uvec4 strides;
@@ -24,7 +26,7 @@ layout(set = 0, binding = 3) writeonly buffer OutputData { OUTER_TYPE output_dat
 #endif
 
 void main() {
-    uint gid = gl_GlobalInvocationID.x;
+    uint gid = global_linear_id();
     if (gid >= pc.shape.x * pc.shape.y * pc.shape.z * pc.shape.w) return;
 
     uint dim  = gid % pc.shape.w;

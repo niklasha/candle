@@ -5,6 +5,8 @@
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
+#include "common.comp"
+
 // Input buffers containing values of type TYPE.
 layout(set = 0, binding = 0) buffer LhsBuffer {
     TYPE lhs_data[];
@@ -94,7 +96,7 @@ uint get_strided_index_b(uint lin_idx) {
 
 // The comparison operation is chosen by the preprocessor define OP.
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
+    uint idx = global_linear_id();
     uint a_idx = get_strided_index_a(idx);
     uint b_idx = get_strided_index_b(idx);
     out_data[idx] = uint8_t((lhs_data[a_idx] OP rhs_data[b_idx]) ? 1u : 0u);

@@ -5,8 +5,9 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float: enable
 
-// We'll use a 1D workgroup so that each invocation processes one output element.
 layout(local_size_x = 256) in;
+
+#include "common.comp"
 
 layout(set = 0, binding = 0) buffer Input {
     TYPE input_data[];
@@ -37,7 +38,7 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 void main() {
-    uint linear_idx = gl_GlobalInvocationID.x;
+    uint linear_idx = global_linear_id();
     if (linear_idx >= pc.total_out_elems) return;
 
     // Decode the output coordinate vector from the linear index.

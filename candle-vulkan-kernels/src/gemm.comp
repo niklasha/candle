@@ -3,6 +3,11 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 #extension GL_EXT_shader_16bit_storage : require
 
+// Use a tiled 16×16 workgroup (the batch is handled via z-dimension).
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#include "common.comp"
+
 #if BF16
     #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
     #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
@@ -12,9 +17,6 @@
     #define CAST_IN(x) (x)
     #define SUM_TYPE TYPE
 #endif
-
-// Use a tiled 16×16 workgroup (the batch is handled via z-dimension).
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 // Matrix A (read-only).
 // It is assumed to be laid out as b batches, each with m rows and k columns.
