@@ -1655,10 +1655,10 @@ impl Kernels {
             // --- CONV_TRANSPOSE1D KERNELS ---
             {
                 let (name, config) = register_kernel!("conv_transpose1d_f32", "src/conv_transpose1d.comp",
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
+                    ("INNER_TYPE", "float"),
+                    ("OUTER_TYPE", "float"),
+                    ("BF16", "0")
+                );
                 configs.insert(name, config);
                 let (name, config) = register_kernel!("conv_transpose1d_f16", "src/conv_transpose1d.comp",
                 ("INNER_TYPE", "float"),
@@ -1685,7 +1685,23 @@ impl Kernels {
                 // );
                 // configs.insert(name, config);
             }
+
+            // --- CONV2D KERNELS ---
+            {
+                let (name, config) = register_kernel!("conv2d_f32", "src/conv2d.comp",
+                    ("INNER_TYPE", "float"),
+                    ("OUTER_TYPE", "float"),
+                    ("BF16", "0")
+                );
+                configs.insert(name, config);
+                // Add BF16, F16 variants if needed...
+                // let (name, config) = register_kernel!("conv2d_bf16", "src/conv2d.comp",
+                //    ("INNER_TYPE", "float"), ("OUTER_TYPE", "uint16_t"), ("BF16", "1")
+                // );
+                // configs.insert(name, config);
+            }
         }
+
         Ok(Self {
             configs,
             compiled: RwLock::new(HashMap::new()),
