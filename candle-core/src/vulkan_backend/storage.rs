@@ -1351,14 +1351,13 @@ impl VulkanStorage {
     }
 
     fn conv_transpose1d_op_impl(
-        &self,          // The input tensor storage
-        layout: &Layout, // Input tensor layout
-        kernel: &Self, // The kernel tensor storage
+        &self,                  // The input tensor storage
+        layout: &Layout,        // Input tensor layout
+        kernel: &Self,          // The kernel tensor storage
         kernel_layout: &Layout, // Kernel tensor layout
         params: &crate::conv::ParamsConvTranspose1D,
         pipeline: &Arc<ComputePipeline>,
     ) -> Result<Self> {
-
         // Define the push constant struct matching the shader's expected layout
         #[repr(C)]
         #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1366,28 +1365,28 @@ impl VulkanStorage {
             // Input Tensor Layout (shape: [B, C_in_T, L_in_T]) - Max Rank 4
             in_base: u32,
             in_rank: u32,
-            _pad_in: [u32; 2], // Padding for alignment
-            in_shape: [u32; 4], // Padded shape [B, C_in_T, L_in_T, 1]
+            _pad_in: [u32; 2],   // Padding for alignment
+            in_shape: [u32; 4],  // Padded shape [B, C_in_T, L_in_T, 1]
             in_stride: [u32; 4], // Padded strides
 
             // Kernel Tensor Layout (shape: [C_in_T, C_out_T, K]) - Max Rank 4 (Assuming groups=1)
             ker_base: u32,
             ker_rank: u32,
-            _pad_ker: [u32; 2], // Padding for alignment
-            ker_shape: [u32; 4], // Padded shape [C_in_T, C_out_T, K, 1]
+            _pad_ker: [u32; 2],   // Padding for alignment
+            ker_shape: [u32; 4],  // Padded shape [C_in_T, C_out_T, K, 1]
             ker_stride: [u32; 4], // Padded strides
 
             // Convolution Parameters (Explicit dimensions for clarity)
-            b_size: u32,        // == in_shape[0]
-            c_in: u32,          // == in_shape[1] == ker_shape[0]
-            l_in: u32,          // == in_shape[2]
-            c_out: u32,         // == ker_shape[1]
-            k_size: u32,        // == ker_shape[2]
-            l_out: u32,         // Output dimension L
+            b_size: u32, // == in_shape[0]
+            c_in: u32,   // == in_shape[1] == ker_shape[0]
+            l_in: u32,   // == in_shape[2]
+            c_out: u32,  // == ker_shape[1]
+            k_size: u32, // == ker_shape[2]
+            l_out: u32,  // Output dimension L
 
             // Convolution Algorithm Parameters
             padding: u32,
-            stride: u32,        // Forward stride
+            stride: u32, // Forward stride
             dilation: u32,
             output_padding: u32, // (Unused in current shader)
         }
@@ -1426,11 +1425,13 @@ impl VulkanStorage {
             return Err(VulkanError::Message(format!(
                 "conv_transpose1d shader expects kernel rank 3 (got {})",
                 ker_rank
-            )).into());
+            ))
+            .into());
         }
         let mut ker_shape_arr = [1u32; 4];
         let mut ker_stride_arr = [1u32; 4];
-        for i in 0..(ker_rank as usize).min(4) { // Will loop 3 times
+        for i in 0..(ker_rank as usize).min(4) {
+            // Will loop 3 times
             ker_shape_arr[i] = ker_shape_slice.dims()[i]
                 .try_into()
                 .map_err(|_| VulkanError::Message("Kernel shape conversion failed".to_string()))?;
@@ -1442,14 +1443,12 @@ impl VulkanStorage {
         }
         let ker_base = kernel_layout.start_offset() as u32;
 
-
         // --- Allocate Output Buffer ---
         let device = self.device();
         // Calculate output shape using params (handles stride, padding etc.)
         let out_layout = Layout::contiguous(params.out_dims());
         let new_storage = unsafe { device.alloc_uninit(out_layout.shape(), self.dtype)? };
         let l_out_calc = params.l_out(); // Calculate final output length
-
 
         // --- Populate Push Constants ---
         let push_constants = ConvTranspose1DPushConstants {
@@ -1500,10 +1499,10 @@ impl VulkanStorage {
                 (*self.buffer).clone().unwrap(),   // Input buffer
                 (*kernel.buffer).clone().unwrap(), // Kernel buffer
             ],
-            vec![output_buffer], // Output buffer
+            vec![output_buffer],           // Output buffer
             [total_output_elements, 1, 1], // Dispatch size (total threads)
-            push_constants, // The populated push constants
-            false, // Let execute_compute_kernel calculate workgroups
+            push_constants,                // The populated push constants
+            false,                         // Let execute_compute_kernel calculate workgroups
         )?;
 
         Ok(new_storage)
