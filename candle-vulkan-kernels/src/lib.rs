@@ -93,7 +93,7 @@ impl<T> From<PoisonError<T>> for VulkanKernelError {
 /// Holds the shader source file path and a vector of default macro definitions.
 #[derive(Debug)]
 pub struct KernelConfig {
-    pub path: &'static str,
+    pub path: String,
     pub defines: Vec<(&'static str, &'static str)>,
 }
 
@@ -140,7 +140,7 @@ impl KernelConfig {
         let compiled_shader = compiler.compile_into_spirv(
             &shader_source,
             shaderc::ShaderKind::Compute,
-            self.path,
+            &self.path,
             "main",
             Some(&options),
         ).map_err(VulkanKernelError::ShadercError)?;
@@ -155,7 +155,7 @@ impl KernelConfig {
 macro_rules! register_kernel {
     ($name:expr, $path:expr, $(($key:expr, $val:expr)),* $(,)?) => {
         ($name.to_string(), KernelConfig {
-            path: $path,
+            path: $path.to_owned(),
             defines: vec![$(($key, $val)),*],
         })
     };
@@ -762,6 +762,48 @@ impl Kernels {
                 ("BF16", "1")
             );
             configs.insert(name, config);
+            let (name, config) = register_kernel!("add_f16", "src/binary.comp",
+                ("OP", "add_op"),
+                ("INNER_TYPE", "float16_t"),
+                ("OUTER_TYPE", "float16_t"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("sub_f16", "src/binary.comp",
+                ("OP", "sub_op"),
+                ("INNER_TYPE", "float16_t"),
+                ("OUTER_TYPE", "float16_t"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("div_f16", "src/binary.comp",
+                ("OP", "div_op"),
+                ("INNER_TYPE", "float16_t"),
+                ("OUTER_TYPE", "float16_t"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("mul_f16", "src/binary.comp",
+                ("OP", "mul_op"),
+                ("INNER_TYPE", "float16_t"),
+                ("OUTER_TYPE", "float16_t"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("minimum_f16", "src/binary.comp",
+                ("OP", "min_op"),
+                ("INNER_TYPE", "float16_t"),
+                ("OUTER_TYPE", "float16_t"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("maximum_f16", "src/binary.comp",
+                ("OP", "max_op"),
+                ("INNER_TYPE", "float16_t"),
+                ("OUTER_TYPE", "float16_t"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
         }
 
         // --- REDUCE_PARTIAL KERNELS ---
@@ -1069,158 +1111,28 @@ impl Kernels {
             configs.insert(name, config);
         }
 
-
-        // --- INDEX_ADD KERNELS ---
-        {
-            let (name, config) = register_kernel!("index_add_u8_u32", "src/index_add.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_add_u8_bf16", "src/index_add.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "float"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_add_u8_f32", "src/index_add.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_add_u32_u32", "src/index_add.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_add_u32_bf16", "src/index_add.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "float"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_add_u32_f32", "src/index_add.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_add_i64_u32", "src/index_add.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_add_i64_bf16", "src/index_add.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "float"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_add_i64_f32", "src/index_add.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-        }
-
-        // --- INDEX_SELECT KERNELS ---
-        {
-            let (name, config) = register_kernel!("index_select_u8_u8", "src/index_select.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "uint8_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u8_u32", "src/index_select.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "uint8_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u8_i64", "src/index_select.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "uint8_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u8_bf16", "src/index_select.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "float"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u8_f32", "src/index_select.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u32_u8", "src/index_select.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u32_u32", "src/index_select.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u32_i64", "src/index_select.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "int64_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u32_bf16", "src/index_select.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "float"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_u32_f32", "src/index_select.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_i64_u8", "src/index_select.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "uint8_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_i64_u32", "src/index_select.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_i64_i64", "src/index_select.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "int64_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_i64_bf16", "src/index_select.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "float"),       // use float for BF16 mode
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("index_select_i64_f32", "src/index_select.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            // (index_select_i64_f16 is omitted as before.)
+        // --- INDEX_{ADD,SELECT} KERNELS ---
+        for shader in ["index_add", "index_select"] {
+            let path = format!("src/{}.comp", shader);
+            for (idx_dtype, idx_glsl_type) in [("u8", "uint8_t"), ("u32", "uint"), ("i64", "int64_t")] {
+                for (dtype, glsl_type) in [("u8", "uint8_t"), ("u32", "uint"), ("i64", "int64_t"), ("f32", "float"), ("f16", "float16_t")] {
+                    let (name, config) = register_kernel!(
+                        format!("{}_{}_{}", shader, idx_dtype, dtype),
+                        &path,
+                        ("IDX_TYPE", idx_glsl_type),
+                        ("TYPE", glsl_type),
+                        ("BF16", "0")
+                    );
+                    configs.insert(name, config);
+                }
+                let (name, config) = register_kernel!(
+                    format!("{}_{}_bf16", shader, idx_dtype),
+                    &path,
+                    ("IDX_TYPE", idx_glsl_type),
+                    ("TYPE", "uint16_t"),
+                    ("BF16", "1")
+                );
+            }
         }
 
         // --- COPY2D SHADERS ---
@@ -1241,6 +1153,10 @@ impl Kernels {
                 ("TYPE", "uint16_t")
             );
             configs.insert(name, config);
+            let (name, config) = register_kernel!("copy2d_f16", "src/copy2d.comp",
+                ("TYPE", "float16_t")
+            );
+            configs.insert(name, config);
         }
 
         // --- COPY_STRIDED_SRC KERNELS ---
@@ -1259,6 +1175,10 @@ impl Kernels {
             configs.insert(name, config);
             let (name, config) = register_kernel!("copy_strided_src_bf16", "src/copy_strided_src.comp",
                 ("TYPE", "uint16_t")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("copy_strided_src_f16", "src/copy_strided_src.comp",
+                ("TYPE", "float16_t")
             );
             configs.insert(name, config);
         }
@@ -1347,8 +1267,13 @@ impl Kernels {
                 ("BF16", "0")
             );
             configs.insert(name, config);
+            let (name, config) = register_kernel!("gemm_f16", "src/gemm.comp",
+                ("TYPE", "float16_t"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
             let (name, config) = register_kernel!("gemm_bf16", "src/gemm.comp",
-                ("TYPE", "float"),
+                ("TYPE", "uint16_t"),
                 ("BF16", "1")
             );
             configs.insert(name, config);
