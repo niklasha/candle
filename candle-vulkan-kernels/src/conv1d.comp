@@ -1,0 +1,81 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_AMD_gpu_shader_half_float : enable
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "common.comp"
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x) INNER_TYPE(x)
+#endif
+
+layout(push_constant) uniform PushConstants {
+    uint elem_count; // Total number of output elements: b_size * l_out * c_out
+    uint b_size;
+    uint l_in;
+    uint c_out;
+    uint c_in;
+    uint k_size;
+    uint l_out;
+    uint padding;
+    uint stride;
+    uint dilation;
+} pc;
+
+// Input buffer: stored as [b_size, c_in, l_in]
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    OUTER_TYPE input_data[];
+};
+
+// Kernel buffer: stored as [c_out, c_in, k_size]
+layout(set = 0, binding = 1) readonly buffer KernelBuffer {
+    OUTER_TYPE kernel_data[];
+};
+
+// Output buffer: stored as [b_size, c_out, l_out]
+layout(set = 0, binding = 2) writeonly buffer OutputBuffer {
+    OUTER_TYPE output_data[];
+};
+
+void main() {
+    uint gid = global_linear_id();
+    if (gid >= pc.elem_count) {
+        return;
+    }
+
+    // --- FIX: decode gid as if the output is stored as [b, c_out, l_out] ---
+    // The flattened index is: gid = b_idx * (c_out * l_out) + c_out_idx * l_out + l_out_idx.
+    // Thus:
+    uint l_out_idx = gid % pc.l_out;
+    uint temp = gid / pc.l_out;
+    uint c_out_idx = temp % pc.c_out;
+    uint b_idx = temp / pc.c_out;
+    // ----------------------------------------------------------------------
+
+    INNER_TYPE sum = INNER_TYPE(0.0);
+
+    // Compute corresponding input index:
+    //   l_in_idx = l_out_idx * stride - padding + k * dilation
+    for (uint k = 0u; k < pc.k_size; ++k) {
+        int l_in_idx = int(l_out_idx * pc.stride) - int(pc.padding) + int(k) * int(pc.dilation);
+        if (l_in_idx < 0 || uint(l_in_idx) >= pc.l_in) {
+            continue;
+        }
+        for (uint c = 0u; c < pc.c_in; ++c) {
+            uint input_index = b_idx * (pc.l_in * pc.c_in) + c * pc.l_in + uint(l_in_idx);
+            uint kernel_index = c_out_idx * (pc.c_in * pc.k_size) + c * pc.k_size + k;
+            INNER_TYPE in_val = CAST_IN(input_data[input_index]);
+            INNER_TYPE ker_val = CAST_IN(kernel_data[kernel_index]);
+            sum += in_val * ker_val;
+        }
+    }
+    output_data[gid] = CAST_OUT(sum);
+}
