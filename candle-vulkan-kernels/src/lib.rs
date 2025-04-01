@@ -1700,6 +1700,15 @@ impl Kernels {
                 // );
                 // configs.insert(name, config);
             }
+
+            // --- CONV_TRANSPOSE2D KERNELS ---
+            {
+                let (name, config) = register_kernel!("conv_transpose2d_f32", "src/conv_transpose2d.comp",
+                    ("INNER_TYPE", "float"), ("OUTER_TYPE", "float"), ("BF16", "0")
+                );
+                configs.insert(name, config);
+                // Add BF16, F16 variants if needed...
+            }
         }
 
         Ok(Self {
