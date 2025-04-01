@@ -33,6 +33,7 @@ impl<T> From<PoisonError<T>> for VulkanError {
         VulkanError::LockError(LockError::Poisoned(p.to_string()))
     }
 }
+
 #[derive(thiserror::Error, Debug)]
 pub enum VulkanError {
     #[error("{0}")]
