@@ -49,8 +49,8 @@ layout(push_constant) uniform GemmPushConstants {
     uint b_row_stride;   // physical row stride for B
     uint b_col_stride;   // physical column stride for B
     uint ldc;  // leading dimension of C per batch.
-    SUM_TYPE alpha; // scaling factor for A×B.
-    SUM_TYPE beta;  // scaling factor for C.
+    float alpha; // scaling factor for A×B.
+    float beta;  // scaling factor for C.
 } pc;
 
 void main() {
@@ -74,5 +74,5 @@ void main() {
 
     // Compute index into C: batch offset + row * ldc + col.
     uint c_index = batch * (pc.m * pc.ldc) + row * pc.ldc + col;
-    c[c_index] = CAST_OUT(pc.alpha * sum + pc.beta * CAST_IN(c[c_index]));
+    c[c_index] = CAST_OUT(SUM_TYPE(pc.alpha) * sum + SUM_TYPE(pc.beta) * CAST_IN(c[c_index]));
 }

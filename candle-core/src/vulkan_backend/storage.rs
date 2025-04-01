@@ -2432,6 +2432,7 @@ impl BackendStorage for VulkanStorage {
             (DType::F32, DType::F32) => "f32",
             (DType::I64, DType::I64) => "i64",
             (DType::BF16, DType::BF16) => "bf16",
+            (DType::F16, DType::F16) => "f16",
             _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, rhs.dtype),
         };
         let key = format!("{}_{}", B::NAME, suffix);
@@ -2863,6 +2864,7 @@ impl BackendStorage for VulkanStorage {
         let suffix = match (self.dtype, rhs.dtype) {
             (DType::F32, DType::F32) => "f32",
             (DType::BF16, DType::BF16) => "bf16",
+            (DType::F16, DType::F16) => "f16",
             _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, rhs.dtype),
         };
         let key = format!("gemm_{}", suffix);
@@ -2889,6 +2891,7 @@ impl BackendStorage for VulkanStorage {
             DType::U32 => "u32",
             DType::I64 => "i64",
             DType::BF16 => "bf16",
+            DType::F16 => "f16",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let key = format!("copy_strided_src_{}", suffix);
@@ -2954,6 +2957,7 @@ impl BackendStorage for VulkanStorage {
             DType::U32 => "u32",
             DType::I64 => "i64",
             DType::BF16 => "bf16",
+            DType::F16 => "f16",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let key = format!("copy2d_{}", suffix);
