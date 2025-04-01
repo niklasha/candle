@@ -1,0 +1,138 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_float16: require
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_AMD_gpu_shader_half_float: enable
+
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include "common.comp" // Make sure global_linear_id() is defined here
+
+// --- Type Casting Macros ---
+#if BF16
+    // Assuming common.comp doesn't define these; adjust if it does
+#define CAST_OUT(x) uint16_t((floatBitsToUint(x)+ 0x8000u) >> 16u)
+    #define CAST_IN(x)  uintBitsToFloat(uint(x) << 16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x)  INNER_TYPE(x)
+#endif
+
+// --- Push Constants ---
+layout (push_constant) uniform PushConstants {
+    // Input Tensor Layout (shape: [B, C_in_T, L_in_T]) - Max Rank 4
+    uint in_base;
+    uint in_rank;
+    uvec2 _pad_in; // Padding for alignment
+    uvec4 in_shape; // Padded shape [B, C_in_T, L_in_T, 1]
+    uvec4 in_stride; // Padded strides
+
+    // Kernel Tensor Layout (shape: [C_in_T, C_out_T, K]) - Max Rank 4 (Assuming groups=1)
+    uint ker_base;
+    uint ker_rank;
+    uvec2 _pad_ker; // Padding for alignment
+    uvec4 ker_shape; // Padded shape [C_in_T, C_out_T, K, 1]
+    uvec4 ker_stride;   // Padded strides
+
+    // Convolution Parameters (Explicit dimensions for clarity)
+    uint b_size; // == in_shape[0]
+    uint c_in; // == in_shape[1] == ker_shape[0]
+    uint l_in; // == in_shape[2]
+    uint c_out; // == ker_shape[1]
+    uint k_size; // == ker_shape[2]
+    uint l_out; // Output dimension L
+
+    // Convolution Algorithm Parameters
+    uint padding;
+    uint stride; // Forward stride
+    uint dilation;
+    uint output_padding; // (Unused in this shader)
+} pc;
+
+// --- Buffer Bindings ---
+// Renamed for clarity matching layout names
+layout (set = 0, binding = 0) readonly buffer InputBuffer {
+    OUTER_TYPE input_data[];
+};
+
+layout (set = 0, binding = 1) readonly buffer KernelBuffer {
+    OUTER_TYPE kernel_data[];
+};
+
+layout (set = 0, binding = 2) writeonly buffer OutputBuffer {
+    // Output is assumed contiguous with shape [b_size, c_out, l_out]
+    OUTER_TYPE output_data[];
+};
+
+// --- Strided Indexing Helper Functions ---
+
+// Computes the physical index for the input tensor given logical coordinates.
+// Assumes logical shape [B, C_in_T, L_in_T] corresponds to strides pc.in_stride.xyz
+uint get_input_physical_index(uint b, uint c, uint l) {
+    // We only use the first 3 dimensions corresponding to the rank.
+    // The stride array access (x, y, z) matches this assumption.
+    return pc.in_base + b * pc.in_stride.x + c * pc.in_stride.y + l * pc.in_stride.z;
+    // Note: This is simpler than the generic rank-4 version when we know the rank is 3.
+    // If rank could vary, we'd need the more complex loop like in binary.comp.
+}
+
+// Computes the physical index for the kernel tensor given logical coordinates.
+// Assumes logical shape [C_in_T, C_out_T, K] corresponds to strides pc.ker_stride.xyz
+uint get_kernel_physical_index(uint c_in_idx, uint c_out_idx, uint k_idx) {
+    // We only use the first 3 dimensions corresponding to the rank.
+    return pc.ker_base + c_in_idx * pc.ker_stride.x + c_out_idx * pc.ker_stride.y + k_idx * pc.ker_stride.z;
+}
+
+
+// --- Main Kernel Logic ---
+void main() {
+    // Total number of output elements = b_size * c_out * l_out.
+    // This assumes the output buffer *is* contiguous and matches these dims.
+    uint total_output_elements = pc.b_size * pc.c_out * pc.l_out;
+    uint gid = global_linear_id(); // Get the unique global thread ID
+
+    if (gid >= total_output_elements) return; // Check bounds
+
+    // Decode the flat output index `gid` into logical output coordinates [b, oc, l]
+    // (assuming output layout [B, C_out_T, L_out_T])
+    uint b_idx = gid / (pc.c_out * pc.l_out);
+    uint rem = gid % (pc.c_out * pc.l_out);
+    uint oc = rem / pc.l_out; // Output Channel index
+    uint l = rem % pc.l_out; // Output Spatial index
+
+    INNER_TYPE sum = INNER_TYPE(0.0);
+
+    // The core transposed convolution loop:
+    // Iterate over the kernel spatial dimension (k) and input channels (c).
+    for (uint k = 0u; k < pc.k_size; ++k) {
+        // Calculate the potential corresponding input spatial location (l_in_idx)
+        // based on the output location (l) and kernel parameters.
+        int tmp = int(l) + int(pc.padding) - int(k) * int(pc.dilation);
+
+        // Check if this kernel position (k) contributes to the output (l)
+        // based on the forward convolution's stride.
+        if (tmp >= 0 && (tmp % int(pc.stride) == 0)) {
+            uint l_in_idx = uint(tmp / int(pc.stride));
+
+            // Check if the calculated input spatial index is within bounds
+            if (l_in_idx < pc.l_in) {
+                // Iterate over all input channels (C_in_T)
+                for (uint c = 0u; c < pc.c_in; ++c) {
+
+                    // --- Use strided indexing functions ---
+                    uint input_phys_idx = get_input_physical_index(b_idx, c, l_in_idx);
+                    uint kernel_phys_idx = get_kernel_physical_index(c, oc, k); // Kernel logical index: [c, oc, k]
+
+                    // --- Read data using physical indices ---
+                    INNER_TYPE in_val = CAST_IN(input_data[input_phys_idx]);
+                    INNER_TYPE ker_val = CAST_IN(kernel_data[kernel_phys_idx]);
+
+                    sum += in_val * ker_val;
+                }
+            }
+        }
+    }
+
+    // Write the accumulated sum to the output buffer (using the original flat gid)
+    output_data[gid] = CAST_OUT(sum);
+}
