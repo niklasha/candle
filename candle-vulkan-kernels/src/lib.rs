@@ -1559,6 +1559,74 @@ impl Kernels {
                 ("ARG_TYPE", "uint8_t")
             );
             configs.insert(name, config);
+
+            // --- CONV1D KERNELS ---
+            {
+                let (name, config) = register_kernel!("conv1d_f32", "src/conv1d.comp",
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+                configs.insert(name, config);
+                // let (name, config) = register_kernel!("conv1d_f16", "src/conv1d.comp",
+                //     ("INNER_TYPE", "float"),
+                //     ("OUTER_TYPE", "float16_t"),
+                //     ("BF16", "0")
+                // );
+                // configs.insert(name, config);
+                // let (name, config) = register_kernel!("conv1d_bf16", "src/conv1d.comp",
+                //     ("INNER_TYPE", "float"),
+                //     ("OUTER_TYPE", "uint16_t"),
+                //     ("BF16", "1")
+                // );
+                // configs.insert(name, config);
+                // let (name, config) = register_kernel!("conv1d_u32", "src/conv1d.comp",
+                //     ("INNER_TYPE", "float"),
+                //     ("OUTER_TYPE", "uint"),
+                //     ("BF16", "0")
+                // );
+                // configs.insert(name, config);
+                // let (name, config) = register_kernel!("conv1d_u8", "src/conv1d.comp",
+                //     ("INNER_TYPE", "float"),
+                //     ("OUTER_TYPE", "uint8_t"),
+                //     ("BF16", "0")
+                // );
+                // configs.insert(name, config);
+            }
+
+            // --- CONV_TRANSPOSE1D KERNELS ---
+            {
+                let (name, config) = register_kernel!("conv_transpose1d_f32", "src/conv_transpose1d.comp",
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("conv_transpose1d_f16", "src/conv_transpose1d.comp",
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float16_t"),
+                ("BF16", "0")
+            );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("conv_transpose1d_bf16", "src/conv_transpose1d.comp",
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "uint16_t"),
+                ("BF16", "1")
+            );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("conv_transpose1d_u32", "src/conv_transpose1d.comp",
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "uint"),
+                ("BF16", "0")
+            );
+                configs.insert(name, config);
+                // let (name, config) = register_kernel!("conv_transpose1d_u8", "src/conv_transpose1d.comp",
+                //     ("INNER_TYPE", "float"),
+                //     ("OUTER_TYPE", "uint8_t"),
+                //     ("BF16", "0")
+                // );
+                // configs.insert(name, config);
+            }
         }
         Ok(Self {
             configs,

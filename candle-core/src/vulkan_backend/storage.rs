@@ -1234,70 +1234,219 @@ impl VulkanStorage {
         Ok(new_storage)
     }
 
-    pub fn layernorm_op_impl(
+    fn conv1d_op_impl(
         &self,
-        layout: &Layout,
-        gamma: &VulkanStorage,
-        beta: &VulkanStorage,
+        kernel: &Self,
+        params: &crate::conv::ParamsConv1D,
         pipeline: &Arc<ComputePipeline>,
-        normalized_axis: usize,
-        eps: f32,
     ) -> Result<Self> {
         #[repr(C)]
-        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct PushConstants {
-            base: u32,
-            rank: u32,
-            normalized_axis: u32,
-            eps: f32,
-            shape: [u32; 4],
-            stride: [u32; 4],
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+        struct Conv1DPushConstants {
+            elem_count: u32,
+            b_size: u32,
+            l_in: u32,
+            c_out: u32,
+            c_in: u32,
+            k_size: u32,
+            l_out: u32,
+            padding: u32,
+            stride: u32,
+            dilation: u32,
         }
 
-        let elem_count = layout.shape().elem_count();
         let device = self.device();
-        let new_storage = unsafe { device.alloc_uninit(layout.shape(), self.dtype)? };
+        let out_layout = Layout::contiguous(params.out_dims());
+        let new_storage = unsafe { device.alloc_uninit(out_layout.shape(), self.dtype)? };
 
-        // shape/stride extraction (rank <= 4)
-        let shape_slice = layout.shape();
-        let stride_slice = layout.stride();
-        let mut shape_arr = [1u32; 4];
-        let mut stride_arr = [1u32; 4];
-        for i in 0..shape_slice.rank().min(4) {
-            shape_arr[i] = shape_slice.dim(i).unwrap() as u32;
-        }
-        for i in 0..stride_slice.len().min(4) {
-            stride_arr[i] = stride_slice[i] as u32;
-        }
-
-        let push_constants = PushConstants {
-            base: layout.start_offset() as u32,
-            rank: shape_slice.rank() as u32,
-            normalized_axis: normalized_axis as u32,
-            eps: eps as f32,
-            shape: shape_arr,
-            stride: stride_arr,
+        let l_out = params.l_out() as u32;
+        let push_constants = Conv1DPushConstants {
+            elem_count: out_layout.shape().elem_count() as u32,
+            b_size: params.b_size as u32,
+            l_in: params.l_in as u32,
+            c_out: params.c_out as u32,
+            c_in: params.c_in as u32,
+            k_size: params.k_size as u32,
+            l_out,
+            padding: params.padding as u32,
+            stride: params.stride as u32,
+            dilation: params.dilation as u32,
         };
 
         self.pending_future.sync_if_needed()?;
-        gamma.pending_future.sync_if_needed()?;
-        beta.pending_future.sync_if_needed()?;
+        kernel.pending_future.sync_if_needed()?;
         new_storage.execute_compute_kernel(
             pipeline,
             vec![
                 (*self.buffer).clone().unwrap(),
-                (*gamma.buffer).clone().unwrap(),
-                (*beta.buffer).clone().unwrap(),
+                (*kernel.buffer).clone().unwrap(),
             ],
             vec![(*new_storage.buffer).clone().unwrap()],
-            [elem_count as u32, 1, 1],
+            [push_constants.elem_count, 1, 1],
             push_constants,
             false,
+        )?;
+        Ok(new_storage)
+    }
+
+    fn conv_transpose1d_op_impl(
+        &self,          // The input tensor storage
+        layout: &Layout, // Input tensor layout
+        kernel: &Self, // The kernel tensor storage
+        kernel_layout: &Layout, // Kernel tensor layout
+        params: &crate::conv::ParamsConvTranspose1D,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<Self> {
+
+        // Define the push constant struct matching the shader's expected layout
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+        struct ConvTranspose1DPushConstants {
+            // Input Tensor Layout (shape: [B, C_in_T, L_in_T]) - Max Rank 4
+            in_base: u32,
+            in_rank: u32,
+            _pad_in: [u32; 2], // Padding for alignment
+            in_shape: [u32; 4], // Padded shape [B, C_in_T, L_in_T, 1]
+            in_stride: [u32; 4], // Padded strides
+
+            // Kernel Tensor Layout (shape: [C_in_T, C_out_T, K]) - Max Rank 4 (Assuming groups=1)
+            ker_base: u32,
+            ker_rank: u32,
+            _pad_ker: [u32; 2], // Padding for alignment
+            ker_shape: [u32; 4], // Padded shape [C_in_T, C_out_T, K, 1]
+            ker_stride: [u32; 4], // Padded strides
+
+            // Convolution Parameters (Explicit dimensions for clarity)
+            b_size: u32,        // == in_shape[0]
+            c_in: u32,          // == in_shape[1] == ker_shape[0]
+            l_in: u32,          // == in_shape[2]
+            c_out: u32,         // == ker_shape[1]
+            k_size: u32,        // == ker_shape[2]
+            l_out: u32,         // Output dimension L
+
+            // Convolution Algorithm Parameters
+            padding: u32,
+            stride: u32,        // Forward stride
+            dilation: u32,
+            output_padding: u32, // (Unused in current shader)
+        }
+
+        // --- Extract Layout Info for Input Tensor ---
+        let in_shape_slice = layout.shape();
+        let in_stride_slice = layout.stride();
+        let in_rank = in_shape_slice.rank() as u32;
+        let mut in_shape_arr = [1u32; 4];
+        let mut in_stride_arr = [1u32; 4]; // Use 1 for default stride like other ops
+        for i in 0..(in_rank as usize).min(4) {
+            in_shape_arr[i] = in_shape_slice.dims()[i]
+                .try_into()
+                .map_err(|_| VulkanError::Message("Input shape conversion failed".to_string()))?;
+            // Make sure stride slice has enough elements before accessing
+            if i < in_stride_slice.len() {
+                in_stride_arr[i] = in_stride_slice[i] as u32;
+            } else {
+                // Handle cases where stride might be shorter than rank (shouldn't happen for conv usually)
+                // If rank > stride.len(), calculate trailing contiguous strides or set sensible defaults.
+                // For rank 3 shape [B, C, L], strides [S0, S1, S2], if rank=3, stride.len()=3, we are fine.
+                // If somehow rank=4, stride.len=3, we might need to set stride[3]=1, but shape[3] is 1 anyway.
+                // Sticking with default 1 seems safest if index out of bounds.
+                in_stride_arr[i] = 1; // Default for potentially missing stride dimensions
+            }
+        }
+        let in_base = layout.start_offset() as u32;
+
+        // --- Extract Layout Info for Kernel Tensor ---
+        let ker_shape_slice = kernel_layout.shape();
+        let ker_stride_slice = kernel_layout.stride();
+        let ker_rank = ker_shape_slice.rank() as u32;
+        // Assuming groups=1, kernel rank should be 3: [C_in_T, C_out_T, K]
+        if ker_rank != 3 {
+            // Or handle groups here if supporting them
+            return Err(VulkanError::Message(format!(
+                "conv_transpose1d shader expects kernel rank 3 (got {})",
+                ker_rank
+            )).into());
+        }
+        let mut ker_shape_arr = [1u32; 4];
+        let mut ker_stride_arr = [1u32; 4];
+        for i in 0..(ker_rank as usize).min(4) { // Will loop 3 times
+            ker_shape_arr[i] = ker_shape_slice.dims()[i]
+                .try_into()
+                .map_err(|_| VulkanError::Message("Kernel shape conversion failed".to_string()))?;
+            if i < ker_stride_slice.len() {
+                ker_stride_arr[i] = ker_stride_slice[i] as u32;
+            } else {
+                ker_stride_arr[i] = 1; // Default
+            }
+        }
+        let ker_base = kernel_layout.start_offset() as u32;
+
+
+        // --- Allocate Output Buffer ---
+        let device = self.device();
+        // Calculate output shape using params (handles stride, padding etc.)
+        let out_layout = Layout::contiguous(params.out_dims());
+        let new_storage = unsafe { device.alloc_uninit(out_layout.shape(), self.dtype)? };
+        let l_out_calc = params.l_out(); // Calculate final output length
+
+
+        // --- Populate Push Constants ---
+        let push_constants = ConvTranspose1DPushConstants {
+            // Input layout
+            in_base,
+            in_rank,
+            _pad_in: [0; 2],
+            in_shape: in_shape_arr,
+            in_stride: in_stride_arr,
+
+            // Kernel layout
+            ker_base,
+            ker_rank,
+            _pad_ker: [0; 2],
+            ker_shape: ker_shape_arr,
+            ker_stride: ker_stride_arr,
+
+            // Convolution parameters (redundant with shapes but maybe clearer for shader)
+            b_size: params.b_size as u32,
+            c_in: params.c_in as u32,
+            l_in: params.l_in as u32,
+            c_out: params.c_out as u32,
+            k_size: params.k_size as u32,
+            l_out: l_out_calc as u32, // Use calculated output length
+
+            // Algorithm parameters
+            padding: params.padding as u32,
+            stride: params.stride as u32, // Renamed from stride_conv
+            dilation: params.dilation as u32,
+            output_padding: params.output_padding as u32,
+        };
+
+        // --- Synchronization and Dispatch ---
+        self.pending_future.sync_if_needed()?;
+        kernel.pending_future.sync_if_needed()?; // Sync kernel too
+
+        // Get output buffer (must exist since we just allocated it)
+        let output_buffer = (*new_storage.buffer)
+            .clone()
+            .ok_or_else(|| VulkanError::Message("Output buffer allocation failed".into()))?;
+
+        // Dispatch: One thread per output element
+        let total_output_elements = out_layout.shape().elem_count() as u32;
+
+        new_storage.execute_compute_kernel(
+            pipeline,
+            vec![
+                (*self.buffer).clone().unwrap(),   // Input buffer
+                (*kernel.buffer).clone().unwrap(), // Kernel buffer
+            ],
+            vec![output_buffer], // Output buffer
+            [total_output_elements, 1, 1], // Dispatch size (total threads)
+            push_constants, // The populated push constants
+            false, // Let execute_compute_kernel calculate workgroups
         )?;
 
         Ok(new_storage)
     }
-
     pub fn rmsnorm_op_impl(
         &self,
         layout: &Layout,
@@ -1952,22 +2101,66 @@ impl BackendStorage for VulkanStorage {
 
     fn conv1d(
         &self,
-        _: &Layout,
-        _: &Self,
-        _: &Layout,
-        _: &crate::conv::ParamsConv1D,
+        layout: &Layout, // input layout; assumed shape: [b, c_in, l_in]
+        kernel: &Self,
+        kernel_layout: &Layout,
+        params: &crate::conv::ParamsConv1D,
     ) -> Result<Self> {
-        fail!()
+        if self.dtype != kernel.dtype {
+            crate::bail!(
+                "Invalid conv1d: mismatched dtypes {:?} vs {:?}",
+                self.dtype,
+                kernel.dtype
+            );
+        }
+
+        let suffix = match (self.dtype, kernel.dtype) {
+            (DType::F32, DType::F32) => "f32",
+            (left, right) => crate::bail!("Vulkan conv1d {left:?} {right:?} not implemented"),
+        };
+        let key = format!("conv1d_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key, None)
+            .map_err(VulkanError::from)?;
+        self.conv1d_op_impl(kernel, params, &pipeline)
     }
 
     fn conv_transpose1d(
         &self,
-        _l: &Layout,
-        _kernel: &Self,
-        _kernel_l: &Layout,
-        _params: &crate::conv::ParamsConvTranspose1D,
+        layout: &Layout, // input layout; assumed shape: [b, c_in, l_in]
+        kernel: &Self,
+        kernel_layout: &Layout,
+        params: &crate::conv::ParamsConvTranspose1D,
     ) -> Result<Self> {
-        fail!()
+        if self.dtype != kernel.dtype {
+            crate::bail!(
+                "Invalid conv_transpose1d: mismatched dtypes {:?} vs {:?}",
+                self.dtype,
+                kernel.dtype
+            );
+        }
+
+        // Select the appropriate shader pipeline based on dtype.
+        let suffix = match (self.dtype, kernel.dtype) {
+            (DType::F32, DType::F32) => "f32",
+            (DType::F16, DType::F16) => "f16",
+            (DType::BF16, DType::BF16) => "bf16",
+            (DType::U32, DType::U32) => "u32",
+            (DType::U8, DType::U8) => "u8",
+            (left, right) => {
+                crate::bail!("Vulkan conv_transpose1d {left:?} {right:?} not implemented")
+            }
+        };
+        let key = format!("conv_transpose1d_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key, None)
+            .map_err(VulkanError::from)?;
+
+        self.conv_transpose1d_op_impl(layout, kernel, kernel_layout, params, &pipeline)
     }
 
     fn conv2d(
