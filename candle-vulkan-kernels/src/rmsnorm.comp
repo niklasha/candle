@@ -36,37 +36,82 @@ layout(set = 0, binding = 2) writeonly buffer OutputBuffer {
     OUTER_TYPE output_data[];
 };
 
+// Shared memory for reduction
+shared INNER_TYPE shared_sum_sq[gl_WorkGroupSize.x]; // Size N
+
+// Helper to get physical index (assuming it handles rank/stride correctly)
+uint get_input_physical_index_from_coords(uvec4 coords) {
+    uint phys_idx = pc.base_offset;
+    for (uint i = 0; i < pc.rank; ++i) {
+        phys_idx += coords[i] * pc.stride[i];
+    }
+    return phys_idx;
+}
+
 void main() {
-    uint row = global_linear_id();
-    uint rank = pc.rank;
-    uint axis = pc.axis;
-    uint offset = pc.base_offset;
+    uint slice_idx = gl_WorkGroupID.x; // Index of the normalization slice (0..num_slices-1)
+    uint local_id = gl_LocalInvocationID.x; // Thread ID within the workgroup (0..N-1)
+    uint norm_dim_size = pc.shape[pc.axis]; // Size of the dimension to normalize over
 
-    // Compute strides for rows and normalized dims
-    uint row_stride = 1;
-    for (uint i = axis; i < rank; ++i) {
-        row_stride *= pc.shape[i];
+    // 1. Calculate Base Coordinates for this Slice
+    //    - This is the tricky part with generic strides. You need to map the flat
+    //      `slice_idx` back to the multi-dimensional coordinates *excluding* the
+    //      normalization axis.
+    uvec4 base_coords = uvec4(0); // Initialize coordinates
+    uint current_slice = slice_idx;
+    uint elements_per_slice_processed = 1;
+    for (int i = int(pc.rank) - 1; i >= 0; --i) { // Iterate dimensions backwards
+                                                  if (i == pc.axis) continue; // Skip normalization axis
+                                                  uint dim_size = pc.shape[i];
+                                                  elements_per_slice_processed *= dim_size;
+                                                  uint coord = current_slice % dim_size;
+                                                  base_coords[i] = coord;
+                                                  current_slice /= dim_size;
+    }
+    // Now base_coords holds the starting logical coordinates for this slice (axis dim is 0).
+
+    // 2. Calculate Sum of Squares in Parallel (Workgroup Reduction)
+    INNER_TYPE thread_sum_sq = INNER_TYPE(0.0);
+    // Each thread handles elements strided along the normalization axis
+    for (uint i = local_id; i < norm_dim_size; i += gl_WorkGroupSize.x) {
+        base_coords[pc.axis] = i; // Set the coordinate for the normalization axis
+        uint phys_idx = get_input_physical_index_from_coords(base_coords);
+        INNER_TYPE val = CAST_IN(input_data[phys_idx]);
+        thread_sum_sq += val * val;
+    }
+    shared_sum_sq[local_id] = thread_sum_sq;
+    barrier(); // Sync threads before reduction
+
+    // --- Parallel Reduction Tree ---
+    // Assumes gl_WorkGroupSize.x (N) is a power of 2. Adapt if not.
+    for (uint s = gl_WorkGroupSize.x / 2; s > 0; s >>= 1) {
+        if (local_id < s) {
+            shared_sum_sq[local_id] += shared_sum_sq[local_id + s];
+        }
+        barrier(); // Sync after each level of reduction
     }
 
-    uint col_stride = row_stride;
-    row_stride = 1;
-    for (uint i = 0; i < axis; ++i) {
-        row_stride *= pc.shape[i];
+    // Result is in shared_sum_sq[0]
+    INNER_TYPE total_sum_sq = INNER_TYPE(0.0);
+    if (local_id == 0) {
+        total_sum_sq = shared_sum_sq[0];
+        // Calculate norm and store back to shared memory for other threads
+        shared_sum_sq[0] = inversesqrt(total_sum_sq / INNER_TYPE(norm_dim_size) + INNER_TYPE(pc.eps));
     }
+    barrier(); // Sync so all threads can read the calculated norm
 
-    INNER_TYPE sum_sq = INNER_TYPE(0.0);
-    for (uint i = 0; i < col_stride; ++i) {
-        uint idx = offset + row * col_stride + i;
-        INNER_TYPE val = CAST_IN(input_data[idx]);
-        sum_sq += val * val;
-    }
+    INNER_TYPE norm = shared_sum_sq[0]; // All threads read the final norm
 
-    INNER_TYPE norm = inversesqrt(sum_sq / INNER_TYPE(col_stride) + INNER_TYPE(pc.eps));
+    // 3. Apply Norm and Gamma, Write Output
+    for (uint i = local_id; i < norm_dim_size; i += gl_WorkGroupSize.x) {
+        base_coords[pc.axis] = i; // Set coordinate for normalization axis again
+        uint input_phys_idx = get_input_physical_index_from_coords(base_coords);
 
-    for (uint i = 0; i < col_stride; ++i) {
-        uint idx = offset + row * col_stride + i;
-        INNER_TYPE val = CAST_IN(input_data[idx]) * norm;
-        INNER_TYPE gamma_val = CAST_IN(gamma[i]);
-        output_data[idx] = CAST_OUT(val * gamma_val);
+        INNER_TYPE val = CAST_IN(input_data[input_phys_idx]);
+        // Gamma index is simply the index along the normalization axis
+        uint gamma_idx = i;
+        INNER_TYPE gamma_val = CAST_IN(gamma[gamma_idx]); // Assumes gamma is contiguous[norm_dim_size]
+
+        output_data[input_phys_idx] = CAST_OUT(val * norm * gamma_val); // Write to same physical index
     }
 }
