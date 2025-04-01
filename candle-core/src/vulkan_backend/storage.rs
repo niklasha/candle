@@ -1640,6 +1640,70 @@ impl VulkanStorage {
         Ok(new_storage)
     }
 
+    pub fn layernorm_op_impl(
+        &self,
+        layout: &Layout,
+        gamma: &VulkanStorage,
+        beta: &VulkanStorage,
+        pipeline: &Arc<ComputePipeline>,
+        normalized_axis: usize,
+        eps: f32,
+    ) -> Result<Self> {
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct PushConstants {
+            base: u32,
+            rank: u32,
+            normalized_axis: u32,
+            eps: f32,
+            shape: [u32; 4],
+            stride: [u32; 4],
+        }
+
+        let elem_count = layout.shape().elem_count();
+        let device = self.device();
+        let new_storage = unsafe { device.alloc_uninit(layout.shape(), self.dtype)? };
+
+        // shape/stride extraction (rank <= 4)
+        let shape_slice = layout.shape();
+        let stride_slice = layout.stride();
+        let mut shape_arr = [1u32; 4];
+        let mut stride_arr = [1u32; 4];
+        for i in 0..shape_slice.rank().min(4) {
+            shape_arr[i] = shape_slice.dim(i).unwrap() as u32;
+        }
+        for i in 0..stride_slice.len().min(4) {
+            stride_arr[i] = stride_slice[i] as u32;
+        }
+
+        let push_constants = PushConstants {
+            base: layout.start_offset() as u32,
+            rank: shape_slice.rank() as u32,
+            normalized_axis: normalized_axis as u32,
+            eps: eps as f32,
+            shape: shape_arr,
+            stride: stride_arr,
+        };
+
+        self.pending_future.sync_if_needed()?;
+        gamma.pending_future.sync_if_needed()?;
+        beta.pending_future.sync_if_needed()?;
+        new_storage.execute_compute_kernel(
+            pipeline,
+            vec![
+                (*self.buffer).clone().unwrap(),
+                (*gamma.buffer).clone().unwrap(),
+                (*beta.buffer).clone().unwrap(),
+            ],
+            vec![(*new_storage.buffer).clone().unwrap()],
+            [elem_count as u32, 1, 1],
+            push_constants,
+            false,
+        )?;
+
+        Ok(new_storage)
+    }
+
     pub fn rmsnorm_op_impl(
         &self,
         layout: &Layout,
