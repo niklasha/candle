@@ -1579,6 +1579,133 @@ impl VulkanStorage {
         Ok(new_storage)
     }
 
+    fn conv_transpose2d_op_impl(
+        &self,                  // Input tensor storage [B, CinT, Hin, Win]
+        kernel: &Self,          // Kernel tensor storage [CinT, CoutT/Groups, KH, KW]
+        layout: &Layout,        // Input tensor layout
+        kernel_layout: &Layout, // Kernel tensor layout
+        params: &crate::conv::ParamsConvTranspose2D,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<Self> {
+        // Note: Result<Self> implies Result<Self, crate::Error>
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+        struct ConvTranspose2DPushConstants {
+            // Input Layout [B, CinT, Hin, Win]
+            in_base: u32,
+            in_rank: u32,
+            _pad_in: [u32; 2],
+            in_shape: [u32; 4],
+            in_stride: [u32; 4],
+            // Kernel Layout [CinT, CoutT, KH, KW] (Since groups=1 always for now)
+            ker_base: u32,
+            ker_rank: u32,
+            _pad_ker: [u32; 2],
+            ker_shape: [u32; 4],
+            ker_stride: [u32; 4],
+            // Dimensions
+            b_size: u32,
+            c_in_t: u32,
+            h_in: u32,
+            w_in: u32,
+            c_out_t: u32,
+            k_h: u32,
+            k_w: u32,
+            h_out: u32,
+            w_out: u32,
+            // Conv Params
+            padding: u32,
+            stride: u32,
+            dilation: u32,
+            // No output_padding needed for shader, no groups
+        }
+
+        // <<< --- START: ADDED LAYOUT EXTRACTION --- >>>
+        // --- Extract Input Layout ---
+        let in_shape_slice = layout.shape();
+        let in_stride_slice = layout.stride();
+        let mut in_shape_arr = [1u32; 4];
+        let mut in_stride_arr = [1u32; 4];
+        for i in 0..4 {
+            // Assume rank 4 based on checks
+            in_shape_arr[i] = in_shape_slice.dims()[i] as u32;
+            in_stride_arr[i] = in_stride_slice[i] as u32;
+        }
+        let in_base = layout.start_offset() as u32;
+
+        // --- Extract Kernel Layout ---
+        let ker_shape_slice = kernel_layout.shape(); // Shape is [CinT, CoutT, KH, KW]
+        let ker_stride_slice = kernel_layout.stride();
+        let mut ker_shape_arr = [1u32; 4];
+        let mut ker_stride_arr = [1u32; 4];
+        for i in 0..4 {
+            // Assume rank 4
+            ker_shape_arr[i] = ker_shape_slice.dims()[i] as u32;
+            ker_stride_arr[i] = ker_stride_slice[i] as u32;
+        }
+        let ker_base = kernel_layout.start_offset() as u32;
+        // <<< --- END: ADDED LAYOUT EXTRACTION --- >>>
+
+        // --- Calculate Output Shape & Allocate ---
+        let device = self.device();
+        let out_shape_vec = params.out_dims(); // Returns Vec<usize>
+        let out_shape: Shape = out_shape_vec.into(); // Convert Vec<usize> to Shape
+        let h_out_calc = out_shape.dims()[2]; // Get from Shape
+        let w_out_calc = out_shape.dims()[3]; // Get from Shape
+                                              // Fix: Use the calculated Shape for Layout::contiguous
+        let out_layout = Layout::contiguous(&out_shape);
+        let new_storage = unsafe { device.alloc_uninit(out_layout.shape(), self.dtype)? };
+        let output_buffer = (*new_storage.buffer).clone().unwrap();
+
+        // --- Populate Push Constants ---
+        let push_constants = ConvTranspose2DPushConstants {
+            // Use the variables declared and initialized above
+            in_base,
+            in_rank: 4,
+            _pad_in: [0; 2],
+            in_shape: in_shape_arr,
+            in_stride: in_stride_arr,
+            ker_base,
+            ker_rank: 4,
+            _pad_ker: [0; 2],
+            ker_shape: ker_shape_arr,
+            ker_stride: ker_stride_arr,
+
+            b_size: params.b_size as u32,
+            c_in_t: params.c_in as u32, // Transpose Input Channels
+            h_in: params.i_h as u32,
+            w_in: params.i_w as u32,
+            c_out_t: params.c_out as u32, // Transpose Output Channels
+            k_h: params.k_h as u32,
+            k_w: params.k_w as u32,
+            h_out: h_out_calc as u32,
+            w_out: w_out_calc as u32,
+
+            padding: params.padding as u32,   // Single value
+            stride: params.stride as u32,     // Single value
+            dilation: params.dilation as u32, // Single value
+        };
+
+        // --- Synchronization and Dispatch ---
+        self.pending_future.sync_if_needed()?;
+        kernel.pending_future.sync_if_needed()?;
+
+        let total_output_elements = out_layout.shape().elem_count() as u32;
+        new_storage.execute_compute_kernel(
+            pipeline,
+            vec![
+                (*self.buffer).clone().unwrap(),
+                (*kernel.buffer).clone().unwrap(),
+            ],
+            vec![output_buffer],
+            [total_output_elements, 1, 1],
+            push_constants,
+            false,
+        )?;
+
+        Ok(new_storage)
+    }
+
     pub fn layernorm_op_impl(
         &self,
         layout: &Layout,
@@ -2385,12 +2512,27 @@ impl BackendStorage for VulkanStorage {
 
     fn conv_transpose2d(
         &self,
-        _l: &Layout,
-        _kernel: &Self,
-        _kernel_l: &Layout,
-        _params: &crate::conv::ParamsConvTranspose2D,
+        layout: &Layout,
+        kernel: &Self,
+        kernel_layout: &Layout,
+        params: &crate::conv::ParamsConvTranspose2D,
     ) -> Result<Self> {
-        fail!()
+        if self.dtype != kernel.dtype { /* ... error ... */ }
+        let suffix = match self.dtype {
+            // Determine suffix based on dtype
+            DType::F32 => "f32",
+            DType::BF16 => "bf16",
+            // DType::F16 => "f16",
+            _ => crate::bail!("Vulkan conv_transpose2d unsupported dtype {:?}", self.dtype),
+        };
+        let key = format!("conv_transpose2d_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key, None)
+            .map_err(VulkanError::from)?; // Convert VulkanKernelError -> VulkanError
+
+        self.conv_transpose2d_op_impl(kernel, layout, kernel_layout, params, &pipeline)
     }
 
     fn avg_pool2d(&self, _: &Layout, _: (usize, usize), _: (usize, usize)) -> Result<Self> {

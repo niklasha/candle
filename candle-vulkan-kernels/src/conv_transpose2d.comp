@@ -1,0 +1,115 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_AMD_gpu_shader_half_float : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in; // Example
+
+#include "common.comp" // Ensure global_linear_id() is defined
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x)+0x8000u)>>16u)
+    #define CAST_IN(x)  uintBitsToFloat(uint(x)<<16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x)  INNER_TYPE(x)
+#endif
+
+layout(push_constant) uniform PushConstants {
+    // Input Layout [B, CinT, Hin, Win]
+    uint in_base; uint in_rank; uvec2 _pad_in; uvec4 in_shape; uvec4 in_stride;
+    // Kernel Layout [CinT, CoutT, KH, KW] (Groups=1 assumed)
+    uint ker_base; uint ker_rank; uvec2 _pad_ker; uvec4 ker_shape; uvec4 ker_stride;
+    // Dimensions
+    uint b_size;
+    uint c_in_t;        // Transpose Input Channels
+    uint h_in;
+    uint w_in;
+    uint c_out_t;       // Transpose Output Channels
+    uint k_h;
+    uint k_w;
+    uint h_out;
+    uint w_out;
+    // Conv Params
+    uint padding; uint stride; uint dilation;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer { OUTER_TYPE input_data[]; }; // [B, CinT, Hin, Win]
+layout(set = 0, binding = 1) readonly buffer KernelBuffer { OUTER_TYPE kernel_data[]; }; // [CinT, CoutT, KH, KW]
+layout(set = 0, binding = 2) writeonly buffer OutputBuffer { OUTER_TYPE output_data[]; }; // Assumed contiguous [B, CoutT, Hout, Wout]
+
+
+// --- 4D Indexing Helpers ---
+// Physical index for Input [B, CinT, Hin, Win]
+uint get_input_physical_index(uint b, uint c, uint h, uint w) {
+    // c here corresponds to c_in_t
+    return pc.in_base + b * pc.in_stride.x + c * pc.in_stride.y + h * pc.in_stride.z + w * pc.in_stride.w;
+}
+
+// Physical index for Kernel [CinT, CoutT, KH, KW]
+uint get_kernel_physical_index(uint ic_t, uint oc_t, uint kh, uint kw) {
+    // ic_t: Input channel index (0 to CinT-1)
+    // oc_t: Output channel index (0 to CoutT-1)
+    // kh, kw: Kernel height/width index (0 to KH-1, 0 to KW-1)
+    return pc.ker_base + ic_t * pc.ker_stride.x + oc_t * pc.ker_stride.y + kh * pc.ker_stride.z + kw * pc.ker_stride.w;
+}
+
+void main() {
+    // <<< --- START: ADD THIS BLOCK --- >>>
+    // Calculate flat global ID
+    uint gid = global_linear_id();
+
+    // Calculate total elements and bounds check
+    // Use c_out_t, h_out, w_out from push constants
+    uint total_output_elements = pc.b_size * pc.c_out_t * pc.h_out * pc.w_out;
+    if (gid >= total_output_elements) return;
+
+    // Decode flat output index `gid` into logical output coordinates [b, oc, oh, ow]
+    // Output layout is assumed contiguous [B, CoutT, Hout, Wout]
+    uint out_stride_b = pc.c_out_t * pc.h_out * pc.w_out;
+    uint out_stride_c = pc.h_out * pc.w_out;
+    uint out_stride_h = pc.w_out;
+
+    uint b  = gid / out_stride_b;
+    uint rc = gid % out_stride_b;
+    uint oc = rc / out_stride_c; // Output Channel index (0..pc.c_out_t-1)
+    uint rh = rc % out_stride_c;
+    uint oh = rh / out_stride_h; // Output Height index (0..pc.h_out-1)
+    uint ow = rh % out_stride_h; // Output Width index (0..pc.w_out-1)
+    // <<< --- END: ADD THIS BLOCK --- >>>
+
+    INNER_TYPE sum = INNER_TYPE(0.0);
+
+    // Transposed Convolution Logic (Groups=1 assumed)
+    for (uint kh = 0; kh < pc.k_h; ++kh) {
+        int tmp_h = int(oh) + int(pc.padding) - int(kh * pc.dilation);
+        for (uint kw = 0; kw < pc.k_w; ++kw) {
+            int tmp_w = int(ow) + int(pc.padding) - int(kw * pc.dilation);
+
+            // Check if this kernel position contributes based on forward stride
+            if (tmp_h >= 0 && tmp_h % int(pc.stride) == 0 &&
+                    tmp_w >= 0 && tmp_w % int(pc.stride) == 0) {
+                uint ih = uint(tmp_h / int(pc.stride));
+                uint iw = uint(tmp_w / int(pc.stride));
+
+                // Check if the calculated input spatial index is within bounds
+                if (ih < pc.h_in && iw < pc.w_in) {
+                    // Iterate over ALL input channels (Transpose input channels)
+                    for (uint ic = 0; ic < pc.c_in_t; ++ic) { // ic relative to CinT
+                        // Ensure correct types for function call
+                        uint input_phys_idx = get_input_physical_index(b, ic, ih, iw);
+                        // Kernel index assumes kernel buffer [CinT, CoutT, KH, KW]
+                        // Pass ic (as ic_t) and oc (as oc_t)
+                        uint kernel_phys_idx = get_kernel_physical_index(ic, oc, kh, kw);
+
+                        INNER_TYPE in_val = CAST_IN(input_data[input_phys_idx]);
+                        INNER_TYPE ker_val = CAST_IN(kernel_data[kernel_phys_idx]);
+                        sum += in_val * ker_val;
+                    }
+                }
+            }
+        }
+    }
+    output_data[gid] = CAST_OUT(sum);
+}
