@@ -75,7 +75,7 @@ fn grad_descent(device: &Device) -> Result<()> {
         let x_grad = grads.get(&x).context("no grad for x")?;
         x.set(&(xt - x_grad * learning_rate)?)?
     }
-    assert_eq!(x.to_scalar::<f32>()?, 4.199999);
+    assert!((x.to_scalar::<f32>()? - 4.199999).abs() < 1e-6);
     Ok(())
 }
 
