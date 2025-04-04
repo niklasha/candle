@@ -2,27 +2,41 @@
 
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_16bit_storage : require
-#extension GL_EXT_shader_8bit_storage : require
+// #extension GL_EXT_shader_8bit_storage : require // Only needed if using u8/i8 types
 #extension GL_AMD_gpu_shader_half_float : enable
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+// Define local workgroup size (can be tuned, 64 or 256 are common)
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-#include "common.comp"
+#include "common.comp" // Requires global_linear_id()
 
+// --- Type Casting Macros ---
 #if BF16
-    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
-    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x)+0x8000u)>>16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x)<<16u)
 #else
-    #define CAST_OUT(x) OUTER_TYPE(x)
-    #define CAST_IN(x) INNER_TYPE(x)
+    // Define INNER_TYPE/OUTER_TYPE via compiler flags
+#define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x)  INNER_TYPE(x)
 #endif
 
+// --- Push Constants ---
+// Matches the corrected Rust struct layout exactly
 layout(push_constant) uniform PushConstants {
-    uint elem_count; // Total number of output elements: b_size * l_out * c_out
+    // Input Layout Info (Rank 3)
+    uint in_base;
+    uint in_rank;         // Expected value: 3
+    uint ker_base;
+    uint ker_rank;        // Expected value: 3
+    uvec4 in_stride;      // Strides for [B, Cin, Lin, 1] (using vec4 for consistency)
+    uvec4 ker_stride;     // Strides for [Cout, Cin, Ksize, 1] (using vec4 for consistency)
+
+    // Dimensions & Convolution Parameters
+    uint elem_count;      // Total output elements
     uint b_size;
     uint l_in;
-    uint c_out;
-    uint c_in;
+    uint c_out;           // Per-group C_out
+    uint c_in;            // Per-group C_in
     uint k_size;
     uint l_out;
     uint padding;
@@ -30,52 +44,83 @@ layout(push_constant) uniform PushConstants {
     uint dilation;
 } pc;
 
-// Input buffer: stored as [b_size, c_in, l_in]
-layout(set = 0, binding = 0) readonly buffer InputBuffer {
-    OUTER_TYPE input_data[];
-};
+// --- Buffer Bindings ---
+// Input buffer: Shape [B, Cin, Lin] (layout defined by pc.in_stride)
+layout(set = 0, binding = 0) readonly buffer InputBuffer { OUTER_TYPE input_data[]; };
+// Kernel buffer: Shape [Cout, Cin, Ksize] (layout defined by pc.ker_stride)
+layout(set = 0, binding = 1) readonly buffer KernelBuffer { OUTER_TYPE kernel_data[]; };
+// Output buffer: Shape [B, Cout, Lout] (assumed contiguous NCHW-like [B,C,W], base 0)
+layout(set = 0, binding = 2) writeonly buffer OutputBuffer { OUTER_TYPE output_data[]; };
 
-// Kernel buffer: stored as [c_out, c_in, k_size]
-layout(set = 0, binding = 1) readonly buffer KernelBuffer {
-    OUTER_TYPE kernel_data[];
-};
+// --- Indexing Helpers ---
+// Input: [B, Cin, Lin] - Assumes Rank 3
+uint get_input_physical_index(uint b, uint c_in_idx, uint l_in_idx) {
+    // Uses first 3 strides from pc.in_stride
+    uint relative_offset = b * pc.in_stride[0] +
+        c_in_idx * pc.in_stride[1] +
+        l_in_idx * pc.in_stride[2];
+    return pc.in_base + relative_offset;
+}
 
-// Output buffer: stored as [b_size, c_out, l_out]
-layout(set = 0, binding = 2) writeonly buffer OutputBuffer {
-    OUTER_TYPE output_data[];
-};
+// Kernel: [Cout, Cin, Ksize] - Assumes Rank 3
+uint get_kernel_physical_index(uint c_out_idx, uint c_in_idx, uint k_idx) {
+    // Uses first 3 strides from pc.ker_stride
+    uint relative_offset = c_out_idx * pc.ker_stride[0] +
+        c_in_idx * pc.ker_stride[1] +
+        k_idx * pc.ker_stride[2];
+    return pc.ker_base + relative_offset;
+}
 
+// --- Main Kernel Logic ---
 void main() {
+    // Get flat index for the output element this thread computes
     uint gid = global_linear_id();
+
+    // Bounds check against total output elements
     if (gid >= pc.elem_count) {
         return;
     }
 
-    // --- FIX: decode gid as if the output is stored as [b, c_out, l_out] ---
-    // The flattened index is: gid = b_idx * (c_out * l_out) + c_out_idx * l_out + l_out_idx.
-    // Thus:
-    uint l_out_idx = gid % pc.l_out;
-    uint temp = gid / pc.l_out;
-    uint c_out_idx = temp % pc.c_out;
-    uint b_idx = temp / pc.c_out;
-    // ----------------------------------------------------------------------
+    // Decode flat output index `gid` into logical output coordinates [b, c_out, l_out]
+    // Assumes contiguous output layout [B, Cout, Lout]
+    uint out_stride_b = pc.c_out * pc.l_out; // Cout * Lout
+    uint out_stride_c = pc.l_out;            // Lout
 
+    uint b_idx      = gid / out_stride_b;
+    uint rem_c      = gid % out_stride_b;
+    uint c_out_idx  = rem_c / out_stride_c;
+    uint l_out_idx  = rem_c % out_stride_c;
+
+    // Accumulator for the output value
     INNER_TYPE sum = INNER_TYPE(0.0);
 
-    // Compute corresponding input index:
-    //   l_in_idx = l_out_idx * stride - padding + k * dilation
+    // Iterate over the kernel spatial dimension (k) and input channels (c_in)
     for (uint k = 0u; k < pc.k_size; ++k) {
-        int l_in_idx = int(l_out_idx * pc.stride) - int(pc.padding) + int(k) * int(pc.dilation);
-        if (l_in_idx < 0 || uint(l_in_idx) >= pc.l_in) {
-            continue;
+        // Calculate the corresponding input spatial index (l_in_idx)
+        // based on output index, kernel position, stride, padding, dilation
+        int l_in_idx_signed = int(l_out_idx * pc.stride) - int(pc.padding) + int(k * pc.dilation);
+
+        // Check if the calculated input index is within bounds [0, l_in)
+        if (l_in_idx_signed >= 0 && uint(l_in_idx_signed) < pc.l_in) {
+            uint l_in_idx = uint(l_in_idx_signed);
+
+            // Iterate over the input channels (per group)
+            for (uint c = 0u; c < pc.c_in; ++c) {
+                // Calculate physical indices using helpers (handles strides/offsets)
+                uint input_index = get_input_physical_index(b_idx, c, l_in_idx);
+                uint kernel_index = get_kernel_physical_index(c_out_idx, c, k);
+
+                // Read values using physical indices and perform cast if needed
+                INNER_TYPE in_val = CAST_IN(input_data[input_index]);
+                INNER_TYPE ker_val = CAST_IN(kernel_data[kernel_index]);
+
+                // Accumulate the product
+                sum += in_val * ker_val;
+            }
         }
-        for (uint c = 0u; c < pc.c_in; ++c) {
-            uint input_index = b_idx * (pc.l_in * pc.c_in) + c * pc.l_in + uint(l_in_idx);
-            uint kernel_index = c_out_idx * (pc.c_in * pc.k_size) + c * pc.k_size + k;
-            INNER_TYPE in_val = CAST_IN(input_data[input_index]);
-            INNER_TYPE ker_val = CAST_IN(kernel_data[kernel_index]);
-            sum += in_val * ker_val;
-        }
+        // If l_in_idx is out of bounds, padding is implicitly zero, so do nothing.
     }
+
+    // Write the final accumulated value to the output buffer (casting if needed)
     output_data[gid] = CAST_OUT(sum);
 }
