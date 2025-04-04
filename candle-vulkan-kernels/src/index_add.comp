@@ -22,11 +22,13 @@ layout(set = 0, binding = 2) buffer Output {
 };
 
 layout(push_constant) uniform PushConstants {
-    uint total_src_elems;   // driven by src
-    uint rank;              // rank of tensors
-    uint selected_dim;      // dim along which to scatter
-    uvec4 input_strides;    // src strides
-    uvec4 output_strides;   // dst strides
+    uint total_src_elems;
+    uint rank;
+    uint in_base;
+    uint out_base;
+    uvec4 input_strides;
+    uvec4 output_strides;
+    uint selected_dim;
 };
 
 void main() {
@@ -46,10 +48,10 @@ void main() {
     coord[selected_dim] = uint(index_data[j]);
 
     // Compute dst linear index
-    uint dst_idx = 0;
+    uint dst_idx = out_base;
     for (uint d = 0; d < rank; ++d) {
         dst_idx += coord[d] * output_strides[d];
     }
 
-    ATOMIC_ADD(output_data[dst_idx], input_data[linear_idx]);
+    ATOMIC_ADD(output_data[dst_idx], input_data[in_base + linear_idx]);
 }

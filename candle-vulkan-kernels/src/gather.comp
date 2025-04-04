@@ -21,6 +21,7 @@ layout(set = 0, binding = 2) buffer Output {
 
 layout(push_constant) uniform PushConstants {
     uint total_out_elems;
+    uint base;
     uint rank;
     uint selected_dim;
     uvec4 input_strides;
@@ -44,7 +45,7 @@ void main() {
     coord[selected_dim] = idx;
 
     // Compute input linear index
-    uint input_idx = 0;
+    uint input_idx = base;
     for (uint d = 0; d < rank; ++d) {
         input_idx += coord[d] * input_strides[d];
     }
