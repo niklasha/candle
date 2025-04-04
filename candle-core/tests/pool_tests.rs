@@ -98,6 +98,18 @@ fn upsample_nearest2d(dev: &Device) -> Result<()> {
             [3.0, 3.0, 4.0, 4.0, 5.0, 5.0]
         ]
     );
+    let t_strided = t.transpose(2, 3)?.contiguous()?.transpose(2, 3)?;
+    let upsampled_strided = t_strided.upsample_nearest2d(4, 6)?.i(0)?.i(0)?;
+    assert_eq!(
+        upsampled_strided.to_vec2::<f32>()?,
+        [
+            [0.0, 0.0, 1.0, 1.0, 2.0, 2.0],
+            [0.0, 0.0, 1.0, 1.0, 2.0, 2.0],
+            [3.0, 3.0, 4.0, 4.0, 5.0, 5.0],
+            [3.0, 3.0, 4.0, 4.0, 5.0, 5.0]
+        ]
+    );
+
     Ok(())
 }
 
