@@ -3,115 +3,184 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float: enable
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+// RMSNorm Shader (Option 2: Uses Output Layout Push Constants)
+// Assumes Rank <= 4
 
-#include "common.comp"
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in; // N = 256
 
+#include "common.comp" // Requires global_linear_id()
+
+// --- Type Casting Macros ---
 #if BF16
-    #define CAST_OUT(x) uint16_t((floatBitsToUint(x) + 0x8000u) >> 16u)
-    #define CAST_IN(x) uintBitsToFloat(uint(x) << 16u)
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x)+0x8000u)>>16u)
+    #define CAST_IN(x) uintBitsToFloat(uint(x)<<16u)
 #else
-    #define CAST_OUT(x) OUTER_TYPE(x)
-    #define CAST_IN(x) INNER_TYPE(x)
+    // Define INNER_TYPE and OUTER_TYPE via compiler flags, e.g., -DINNER_TYPE=float -DOUTER_TYPE=float
+#define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x)  INNER_TYPE(x)
 #endif
 
+// --- Push Constants ---
+// Matches the corrected Rust struct for Option 2
 layout(push_constant) uniform PushConstants {
-    uint base_offset;
-    uint rank;
-    uint axis;
-    float eps;
-    uvec4 shape;
-    uvec4 stride;
+uint in_base;        // Base offset for InputBuffer
+uint rank;           // Rank of the tensor (<= 4)
+uint axis;           // Axis to normalize over
+float eps;           // Epsilon value for numerical stability
+// Input Layout
+uvec4 in_shape;      // Shape (padded to 4D)
+uvec4 in_stride;     // Strides (padded to 4D)
+// Output Layout (Contiguous)
+uvec4 out_shape;     // Shape (padded to 4D, same as in_shape)
+uvec4 out_stride;    // Contiguous strides calculated from out_shape
+// Dimension size along the normalization axis
+uint norm_dim_size;
+// Add padding if needed for alignment in Rust struct
+// uint _pad0;
 } pc;
 
-layout(set = 0, binding = 0) readonly buffer InputBuffer {
-    INNER_TYPE input_data[];
-};
+// --- Buffer Bindings ---
+layout(set = 0, binding = 0) readonly buffer InputBuffer { INNER_TYPE input_data[]; };
+layout(set = 0, binding = 1) readonly buffer GammaBuffer { INNER_TYPE gamma[]; }; // Assumes contiguous, base 0
+layout(set = 0, binding = 2) writeonly buffer OutputBuffer { OUTER_TYPE output_data[]; }; // Assumes contiguous, base 0
 
-layout(set = 0, binding = 1) readonly buffer GammaBuffer {
-    INNER_TYPE gamma[];
-};
+// --- Shared Memory for Reduction ---
+// Size matches the workgroup size declared in the layout directive
+shared INNER_TYPE shared_sum_sq[gl_WorkGroupSize.x]; // N = 256
 
-layout(set = 0, binding = 2) writeonly buffer OutputBuffer {
-    OUTER_TYPE output_data[];
-};
+// --- Helper Functions for Physical Index Calculation ---
 
-// Shared memory for reduction
-shared INNER_TYPE shared_sum_sq[gl_WorkGroupSize.x]; // Size N
-
-// Helper to get physical index (assuming it handles rank/stride correctly)
+// Calculates physical index in InputBuffer using input strides/base
 uint get_input_physical_index_from_coords(uvec4 coords) {
-    uint phys_idx = pc.base_offset;
+    uint phys_idx = pc.in_base; // Start with input base offset
+    // Loop up to the actual rank of the tensor
     for (uint i = 0; i < pc.rank; ++i) {
-        phys_idx += coords[i] * pc.stride[i];
+        // Access within bounds because rank <= 4
+        phys_idx += coords[i] * pc.in_stride[i];
     }
     return phys_idx;
 }
 
-void main() {
-    uint slice_idx = gl_WorkGroupID.x; // Index of the normalization slice (0..num_slices-1)
-    uint local_id = gl_LocalInvocationID.x; // Thread ID within the workgroup (0..N-1)
-    uint norm_dim_size = pc.shape[pc.axis]; // Size of the dimension to normalize over
-
-    // 1. Calculate Base Coordinates for this Slice
-    //    - This is the tricky part with generic strides. You need to map the flat
-    //      `slice_idx` back to the multi-dimensional coordinates *excluding* the
-    //      normalization axis.
-    uvec4 base_coords = uvec4(0); // Initialize coordinates
-    uint current_slice = slice_idx;
-    uint elements_per_slice_processed = 1;
-    for (int i = int(pc.rank) - 1; i >= 0; --i) { // Iterate dimensions backwards
-                                                  if (i == pc.axis) continue; // Skip normalization axis
-                                                  uint dim_size = pc.shape[i];
-                                                  elements_per_slice_processed *= dim_size;
-                                                  uint coord = current_slice % dim_size;
-                                                  base_coords[i] = coord;
-                                                  current_slice /= dim_size;
+// Calculates physical index in OutputBuffer using output strides/base (base=0)
+uint get_output_physical_index_from_coords(uvec4 coords) {
+    uint phys_idx = 0; // Output base offset is assumed to be 0
+    // Loop up to the actual rank of the tensor
+    for (uint i = 0; i < pc.rank; ++i) {
+        // Access within bounds because rank <= 4
+        phys_idx += coords[i] * pc.out_stride[i];
     }
-    // Now base_coords holds the starting logical coordinates for this slice (axis dim is 0).
+    return phys_idx;
+}
 
-    // 2. Calculate Sum of Squares in Parallel (Workgroup Reduction)
-    INNER_TYPE thread_sum_sq = INNER_TYPE(0.0);
-    // Each thread handles elements strided along the normalization axis
-    for (uint i = local_id; i < norm_dim_size; i += gl_WorkGroupSize.x) {
-        base_coords[pc.axis] = i; // Set the coordinate for the normalization axis
-        uint phys_idx = get_input_physical_index_from_coords(base_coords);
-        INNER_TYPE val = CAST_IN(input_data[phys_idx]);
+
+// --- Main Kernel Logic ---
+void main() {
+    // --- Identify Thread and Slice ---
+    uint slice_idx = gl_WorkGroupID.x;   // Index of the normalization slice this workgroup handles
+    uint local_id = gl_LocalInvocationID.x; // Thread index within this workgroup (0..255)
+    // norm_dim_size is passed directly via push constants
+
+    // --- Bounds check (optional safety for direct dispatch) ---
+    // uint num_slices = ...; // Calculate if needed, or pass via push const
+    // if (slice_idx >= num_slices) return;
+
+    // --- Calculate Base Coordinates for this Slice ---
+    // Decode the flat slice_idx into multi-dimensional logical coordinates
+    // for dimensions *not* equal to pc.axis. This uses the output layout
+    // (which is contiguous) for easier decoding compared to generic input strides.
+    uvec4 base_coords = uvec4(0); // Initialize logical coordinates for the start of the slice
+    uint current_slice = slice_idx;
+    // Iterate backwards through dimensions (effectively calculating NCHW coords)
+    for (int i = int(pc.rank) - 1; i >= 0; --i) {
+        // Skip the axis we are normalizing over
+        if (i == pc.axis) continue;
+        // Use OUTPUT shape for decoding the slice index
+        uint dim_size = pc.out_shape[i];
+        // Avoid division by zero if a dimension size is zero (should be caught by host)
+        if (dim_size == 0) continue;
+        // Calculate coordinate for this dimension
+        base_coords[i] = current_slice % dim_size;
+        // Update remaining slice index value
+        current_slice /= dim_size;
+    }
+    // base_coords now holds the logical coordinates (e.g., N, C, H for axis=W)
+    // for the start of this slice (the coordinate for pc.axis is still 0).
+
+    // --- Calculate Sum of Squares in Parallel within Workgroup ---
+    INNER_TYPE thread_sum_sq = INNER_TYPE(0.0); // Accumulator for this thread
+    uvec4 current_coords = base_coords; // Use a mutable copy for iteration
+
+    // Each thread iterates over elements along the normalization axis (pc.axis)
+    // The loop distributes elements across threads in the workgroup (stride = N = 256)
+    for (uint i = local_id; i < pc.norm_dim_size; i += gl_WorkGroupSize.x) {
+        current_coords[pc.axis] = i; // Set the coordinate for the normalization axis
+
+        // Calculate the physical address in the INPUT buffer using input strides/base
+        uint input_phys_idx = get_input_physical_index_from_coords(current_coords);
+
+        // Read value, cast, square, and accumulate
+        INNER_TYPE val = CAST_IN(input_data[input_phys_idx]);
         thread_sum_sq += val * val;
     }
-    shared_sum_sq[local_id] = thread_sum_sq;
-    barrier(); // Sync threads before reduction
 
-    // --- Parallel Reduction Tree ---
-    // Assumes gl_WorkGroupSize.x (N) is a power of 2. Adapt if not.
+    // Store this thread's partial sum into shared memory
+    shared_sum_sq[local_id] = thread_sum_sq;
+
+    // Synchronize all threads in the workgroup before starting reduction
+    barrier();
+
+    // --- Parallel Reduction (Summation) using Shared Memory ---
+    // Assumes workgroup size (N=256) is a power of 2.
     for (uint s = gl_WorkGroupSize.x / 2; s > 0; s >>= 1) {
+        // Ensure writes from the previous reduction level are visible
+        barrier();
+        // Threads in the first half of the current segment add values from the second half
         if (local_id < s) {
             shared_sum_sq[local_id] += shared_sum_sq[local_id + s];
         }
-        barrier(); // Sync after each level of reduction
     }
 
-    // Result is in shared_sum_sq[0]
-    INNER_TYPE total_sum_sq = INNER_TYPE(0.0);
+    // Ensure the final sum calculation by thread 0 is finished before proceeding
+    barrier();
+
+    // --- Calculate Normalization Factor (Thread 0) and Broadcast ---
+    INNER_TYPE norm = INNER_TYPE(1.0); // Default/fallback value
+    // Only thread 0 calculates the final norm from the total sum
     if (local_id == 0) {
-        total_sum_sq = shared_sum_sq[0];
-        // Calculate norm and store back to shared memory for other threads
-        shared_sum_sq[0] = inversesqrt(total_sum_sq / INNER_TYPE(norm_dim_size) + INNER_TYPE(pc.eps));
+        INNER_TYPE total_sum_sq = shared_sum_sq[0]; // Get total sum from reduction
+        // Calculate the inverse square root (RMS scale factor)
+        norm = inversesqrt(total_sum_sq / INNER_TYPE(pc.norm_dim_size) + INNER_TYPE(pc.eps));
+        // Store the calculated norm back into shared memory location 0 for broadcasting
+        shared_sum_sq[0] = norm;
     }
-    barrier(); // Sync so all threads can read the calculated norm
 
-    INNER_TYPE norm = shared_sum_sq[0]; // All threads read the final norm
+    // Synchronize so all threads can safely read the calculated norm from shared_sum_sq[0]
+    barrier();
 
-    // 3. Apply Norm and Gamma, Write Output
-    for (uint i = local_id; i < norm_dim_size; i += gl_WorkGroupSize.x) {
-        base_coords[pc.axis] = i; // Set coordinate for normalization axis again
-        uint input_phys_idx = get_input_physical_index_from_coords(base_coords);
+    // All threads read the final normalization factor
+    norm = shared_sum_sq[0];
 
+    // --- Apply Normalization and Gamma, Write to Output ---
+    current_coords = base_coords; // Reset coordinates to the start of the slice
+
+    // Each thread iterates again over the elements it's responsible for
+    for (uint i = local_id; i < pc.norm_dim_size; i += gl_WorkGroupSize.x) {
+        current_coords[pc.axis] = i; // Set coordinate along normalization axis
+
+        // Calculate input physical index again to read the original value
+        uint input_phys_idx = get_input_physical_index_from_coords(current_coords);
         INNER_TYPE val = CAST_IN(input_data[input_phys_idx]);
-        // Gamma index is simply the index along the normalization axis
-        uint gamma_idx = i;
-        INNER_TYPE gamma_val = CAST_IN(gamma[gamma_idx]); // Assumes gamma is contiguous[norm_dim_size]
 
-        output_data[input_phys_idx] = CAST_OUT(val * norm * gamma_val); // Write to same physical index
+        // Calculate gamma index (simple index along the axis)
+        uint gamma_idx = i;
+        // Read gamma value (assumes contiguous gamma buffer starting at offset 0)
+        INNER_TYPE gamma_val = CAST_IN(gamma[gamma_idx]);
+
+        // Calculate the corresponding physical index in the OUTPUT buffer
+        // Use the output layout strides/shape (base offset assumed 0)
+        uint output_phys_idx = get_output_physical_index_from_coords(current_coords);
+
+        // Apply normalization and gamma, cast to output type, and write result
+        output_data[output_phys_idx] = CAST_OUT(val * norm * gamma_val);
     }
 }

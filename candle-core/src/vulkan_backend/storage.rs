@@ -1261,15 +1261,29 @@ impl VulkanStorage {
     }
 
     fn conv1d_op_impl(
-        &self,
-        kernel: &Self,
+        &self,                  // Input tensor storage
+        kernel: &Self,          // Kernel tensor storage
+        layout: &Layout,        // Input layout
+        kernel_layout: &Layout, // Kernel layout
         params: &crate::conv::ParamsConv1D,
         pipeline: &Arc<ComputePipeline>,
     ) -> Result<Self> {
+        // Assumes crate::Error return
+
+        // Define push constant struct including layout info for both inputs
         #[repr(C)]
         #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
         struct Conv1DPushConstants {
-            elem_count: u32,
+            // Input Layout Info (Rank 3, padded to 4)
+            in_base: u32,
+            in_rank: u32,        // Expected value: 3
+            ker_base: u32,
+            ker_rank: u32,        // Expected value: 3
+            in_stride: [u32; 4], // Strides for [B, Cin, Lin, 1]
+            ker_stride: [u32; 4], // Strides for [Cout, Cin, Ksize, 1]
+
+            // Dimensions & Convolution Parameters
+            elem_count: u32, // Total output elements for bounds check
             b_size: u32,
             l_in: u32,
             c_out: u32,
@@ -1280,38 +1294,85 @@ impl VulkanStorage {
             stride: u32,
             dilation: u32,
         }
+        // Ensure total size and alignment are checked/managed if needed
 
+        // --- Extract Input Layout ---
+        let in_shape_slice = layout.shape();
+        let in_stride_slice = layout.stride();
+        let in_rank = in_shape_slice.rank(); // Expected 3
+        let mut in_stride_arr = [1u32; 4]; // Default stride 1 for unused dims
+        for i in 0..in_rank {
+            in_stride_arr[i] = in_stride_slice[i] as u32;
+        }
+        let in_base = layout.start_offset() as u32;
+
+        // --- Extract Kernel Layout ---
+        let ker_shape_slice = kernel_layout.shape();
+        let ker_stride_slice = kernel_layout.stride();
+        let ker_rank = ker_shape_slice.rank(); // Expected 3
+        let mut ker_stride_arr = [1u32; 4]; // Default stride 1
+        for i in 0..ker_rank {
+            ker_stride_arr[i] = ker_stride_slice[i] as u32;
+        }
+        let ker_base = kernel_layout.start_offset() as u32;
+
+        // --- Calculate Output Shape & Allocate ---
         let device = self.device();
-        let out_layout = Layout::contiguous(params.out_dims());
-        let new_storage = unsafe { device.alloc_uninit(out_layout.shape(), self.dtype)? };
+        // Use params which are already adjusted for groups by candle-core
+        let out_dims_vec = params.out_dims(); // Returns Vec<usize> [B, Cout_per_group, Lout]
+        let out_shape: Shape = out_dims_vec.into(); // Convert to Shape
+        let out_layout = Layout::contiguous(&out_shape); // Output is contiguous
+        let new_storage = unsafe { device.alloc_uninit(&out_shape, self.dtype())? };
 
-        let l_out = params.l_out() as u32;
+        // Get output length from calculated shape
+        let l_out_calc = out_shape.dims()[2] as u32; // Lout is dim 2
+
+        // --- Populate Push Constants ---
         let push_constants = Conv1DPushConstants {
+            in_base,
+            in_rank: in_rank as u32,
+            ker_base,
+            ker_rank: ker_rank as u32,
+            in_stride: in_stride_arr,
+            ker_stride: ker_stride_arr,
+
             elem_count: out_layout.shape().elem_count() as u32,
             b_size: params.b_size as u32,
             l_in: params.l_in as u32,
-            c_out: params.c_out as u32,
-            c_in: params.c_in as u32,
+            c_out: params.c_out as u32, // Per-group C_out from params
+            c_in: params.c_in as u32,   // Per-group C_in from params
             k_size: params.k_size as u32,
-            l_out,
+            l_out: l_out_calc, // Use calculated L_out
             padding: params.padding as u32,
             stride: params.stride as u32,
             dilation: params.dilation as u32,
         };
 
+        // Print push constants for debugging if needed
+        // println!("Conv1D PushConstants: {:?}", push_constants);
+
+        // --- Synchronization and Dispatch ---
         self.pending_future.sync_if_needed()?;
-        kernel.pending_future.sync_if_needed()?;
+        kernel.pending_future.sync_if_needed()?; // Sync kernel buffer too
+
+        // Get output buffer (must exist)
+        let output_buffer = (*new_storage.buffer).clone().ok_or_else(|| {
+            VulkanError::Message("Output buffer allocation failed unexpectedly".into())
+        })?; // Convert VulkanError
+
+        // Dispatch one thread per output element
         new_storage.execute_compute_kernel(
             pipeline,
             vec![
-                (*self.buffer).clone().unwrap(),
-                (*kernel.buffer).clone().unwrap(),
+                (*self.buffer).clone().unwrap(),   // Input buffer
+                (*kernel.buffer).clone().unwrap(), // Kernel buffer
             ],
-            vec![(*new_storage.buffer).clone().unwrap()],
-            [push_constants.elem_count, 1, 1],
-            push_constants,
-            false,
+            vec![output_buffer],               // Output buffer
+            [push_constants.elem_count, 1, 1], // Dispatch size (total threads)
+            push_constants,                    // The populated push constants
+            false,                             // Let execute_compute_kernel calculate workgroups
         )?;
+
         Ok(new_storage)
     }
 
@@ -1987,43 +2048,125 @@ impl VulkanStorage {
         axis: usize,
         eps: f32,
     ) -> Result<Self> {
+        // Assumes crate::Error
+        // Check Rank Limit
+        let rank = layout.shape().rank();
+        if rank > 4 {
+            return Err(VulkanError::Message(format!(
+                "Vulkan RMSNorm only supports rank up to 4, got {}",
+                rank
+            ))
+            .into()); // Convert VulkanError to crate::Error as needed
+        }
+        if axis >= rank {
+            // Removed axis >= 4 check as rank is already <= 4
+            return Err(VulkanError::Message(format!(
+                "RMSNorm axis {} is out of bounds for rank {}",
+                axis, rank
+            ))
+            .into());
+        }
+
         #[repr(C)]
-        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
         struct PushConstants {
-            base_offset: u32,
+            in_base: u32,
             rank: u32,
             axis: u32,
             eps: f32,
-            shape: [u32; 4],
-            stride: [u32; 4],
+            // Input Layout
+            in_shape: [u32; 4],
+            in_stride: [u32; 4],
+            // Output Layout (contiguous, same shape as input)
+            out_shape: [u32; 4],  // = in_shape
+            out_stride: [u32; 4], // Contiguous strides based on shape
+            norm_dim_size: u32,
         }
 
         let shape = layout.shape();
         let stride = layout.stride();
-        let mut shape_arr = [1u32; 4];
-        let mut stride_arr = [1u32; 4];
-        for i in 0..shape.rank().min(4) {
-            shape_arr[i] = shape.dim(i).unwrap() as u32;
+        // rank already calculated
+
+        let mut in_shape_arr = [1u32; 4];
+        let mut in_stride_arr = [1u32; 4];
+        let mut out_shape_arr = [1u32; 4]; // This will be same as in_shape_arr
+        let mut out_stride_arr = [1u32; 4];
+
+        // Calculate contiguous output strides while populating shapes/input strides
+        let mut current_out_stride = 1u32;
+        for i in (0..rank).rev() {
+            // Iterate backwards for contiguous stride calculation
+            // Use shape.dims() directly which returns usize, then cast
+            let dim_size_usize = shape.dims()[i];
+            if dim_size_usize > u32::MAX as usize {
+                // Safety check
+                return Err(VulkanError::Message(format!(
+                    "Dimension size {} exceeds u32::MAX",
+                    dim_size_usize
+                ))
+                .into());
+            }
+            let dim_size = dim_size_usize as u32;
+
+            in_shape_arr[i] = dim_size;
+            out_shape_arr[i] = dim_size;
+            in_stride_arr[i] = stride[i] as u32;
+
+            out_stride_arr[i] = current_out_stride; // Assign current multiplier
+            if dim_size > 0 {
+                // Avoid multiplying by 0 if dim_size is 0
+                current_out_stride = current_out_stride.saturating_mul(dim_size);
+            } else {
+                // If dim_size is 0, the stride for dimensions before it doesn't increase.
+                // The stride *of* this dimension remains 1 (or the previous stride multiplier).
+                // Let's keep it as the previous multiplier. This needs careful thought for rank 0 tensors though.
+                // If dim_size is 0, current_out_stride effectively becomes infinite logically.
+                // However, element count is 0, so maybe doesn't matter? Stick to simple mul.
+                current_out_stride = current_out_stride.saturating_mul(dim_size); // Will become 0
+                if current_out_stride == 0 && rank > i + 1 {
+                    // If not the outermost dim
+                    // How to represent stride for outer dims if inner is 0?
+                    // Let's default back to 1? This implies a conceptual size of 1.
+                    current_out_stride = 1;
+                } else if current_out_stride == 0 && i == 0 {
+                    current_out_stride = 1; // Base case
+                }
+            }
         }
-        for i in 0..stride.len().min(4) {
-            stride_arr[i] = stride[i] as u32;
+        // Fill remaining strides for rank < 4
+        for i in (rank..4).rev() {
+            out_stride_arr[i] = current_out_stride;
+            // Don't multiply current_out_stride further as shape is 1
         }
 
+        // Correctly get norm_dim_size from the populated array
+        let norm_dim_size = in_shape_arr[axis];
+        if norm_dim_size == 0 {
+            return Err(
+                crate::Error::Msg("Cannot normalize over dimension of size 0".to_string()).bt(),
+            );
+        }
+        // num_slices calculation requires usize
+        let num_slices = shape.elem_count() / (norm_dim_size as usize);
+
         let push_constants = PushConstants {
-            base_offset: layout.start_offset() as u32,
-            rank: shape.rank() as u32,
+            in_base: layout.start_offset() as u32,
+            rank: rank as u32,
             axis: axis as u32,
             eps: eps,
-            shape: shape_arr,
-            stride: stride_arr,
+            in_shape: in_shape_arr,
+            in_stride: in_stride_arr,
+            out_shape: out_shape_arr,
+            out_stride: out_stride_arr,
+            norm_dim_size,
         };
 
         let device = self.device();
-        let output = unsafe { device.alloc_uninit(shape, self.dtype)? };
-        let count = shape.elem_count();
+        let output = unsafe { device.alloc_uninit(shape, self.dtype())? };
 
         self.pending_future.sync_if_needed()?;
         gamma.pending_future.sync_if_needed()?;
+
         output.execute_compute_kernel(
             pipeline,
             vec![
@@ -2031,7 +2174,7 @@ impl VulkanStorage {
                 (*gamma.buffer).clone().unwrap(),
             ],
             vec![(*output.buffer).clone().unwrap()],
-            [((count as u32) / shape.dims()[axis] as u32), 1, 1],
+            [num_slices as u32, 1, 1],
             push_constants,
             true,
         )?;
@@ -2322,6 +2465,8 @@ impl VulkanStorage {
             b_batch_stride: u32, // physical batch stride for B
             b_row_stride: u32,   // physical row stride for B
             b_col_stride: u32,   // physical column stride for B
+            a_base: u32,
+            b_base: u32,
             ldc: u32,
             alpha: f32,
             beta: f32,
@@ -2340,12 +2485,14 @@ impl VulkanStorage {
             let a_batch_stride = layout.stride()[0] as u32;
             let a_row_stride = layout.stride()[a_rank - 2] as u32;
             let a_col_stride = layout.stride()[a_rank - 1] as u32;
+            let a_base = layout.start_offset() as u32;
 
             // Similarly for B: assume shape is [b, k, n]:
             let b_rank = rhs_layout.shape().rank();
             let b_batch_stride = rhs_layout.stride()[0] as u32;
             let b_row_stride = rhs_layout.stride()[b_rank - 2] as u32;
             let b_col_stride = rhs_layout.stride()[b_rank - 1] as u32;
+            let b_base = rhs_layout.start_offset() as u32;
 
             // For C, assume it’s allocated contiguously with shape [b, m, n],
             // so the logical row stride is n, and batch stride would be m * n.
@@ -2362,6 +2509,8 @@ impl VulkanStorage {
                 b_batch_stride,
                 b_row_stride,
                 b_col_stride,
+                a_base,
+                b_base,
                 ldc,
                 alpha: 1f32,
                 beta: 0f32,
@@ -2649,9 +2798,11 @@ impl BackendStorage for VulkanStorage {
         &self,
         layout: &Layout, // input layout; assumed shape: [b, c_in, l_in]
         kernel: &Self,
-        kernel_layout: &Layout,
+        kernel_layout: &Layout, // <<< ADDED kernel_layout parameter
         params: &crate::conv::ParamsConv1D,
     ) -> Result<Self> {
+        // Assumes crate::Error return
+        // Dtype check (as before)
         if self.dtype != kernel.dtype {
             crate::bail!(
                 "Invalid conv1d: mismatched dtypes {:?} vs {:?}",
@@ -2660,17 +2811,23 @@ impl BackendStorage for VulkanStorage {
             );
         }
 
-        let suffix = match (self.dtype, kernel.dtype) {
-            (DType::F32, DType::F32) => "f32",
-            (left, right) => crate::bail!("Vulkan conv1d {left:?} {right:?} not implemented"),
+        // Select shader based on dtype
+        let suffix = match self.dtype {
+            DType::F32 => "f32",
+            DType::BF16 => "bf16",
+            DType::F16 => "f16",
+            // Add other supported types here
+            _ => crate::bail!("Vulkan conv1d unsupported dtype {:?}", self.dtype),
         };
         let key = format!("conv1d_{}", suffix);
         let pipeline = self
             .device
             .kernels()
             .load_pipeline(self.device.device(), &key, None)
-            .map_err(VulkanError::from)?;
-        self.conv1d_op_impl(kernel, params, &pipeline)
+            .map_err(VulkanError::from)?; // Map VulkanKernelError -> VulkanError -> crate::Error
+
+        // Call the implementation function, passing both layouts
+        self.conv1d_op_impl(kernel, layout, kernel_layout, params, &pipeline)
     }
 
     fn conv_transpose1d(
