@@ -1,6 +1,9 @@
 #ifndef COMMON_COMP_GUARD
   #define COMMON_COMP_GUARD
 
+  // The maximum rank of tensors supported by the Vulkan backend.
+  #define MAX_RANK 8u
+
   #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
   #extension GL_EXT_shader_atomic_float : enable
 
