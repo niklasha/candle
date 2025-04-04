@@ -40,9 +40,9 @@ layout(std430, binding = 2) writeonly buffer PartialIndexBuffer {
 layout(push_constant) uniform ReducePushConstants {
     uint base;
     uint rank;
-    uvec4 shape;
-    uvec4 stride;
-    uvec4 reduce_axes;
+    uint shape[MAX_RANK];
+    uint stride[MAX_RANK];
+    uint reduce_axes[MAX_RANK];
 } pc;
 
 // Shared memory arrays for the intra-workgroup reduction.
@@ -54,7 +54,7 @@ shared bool svalid[256];
 uint compute_reduction_offset(uint flat_index) {
     uint offset = 0u;
     uint remainder = flat_index;
-    for (uint i = 0u; i < 4u; i++) {
+    for (uint i = 0u; i < MAX_RANK; i++) {
         uint red = pc.reduce_axes[i];
         if (red == 0xFFFFFFFFu) break;
         uint dim_size = pc.shape[red];
@@ -71,10 +71,14 @@ uint get_base_index(uint logical_idx) {
     uint out_stride[4];
     uint out_rank = 0;
     for (uint d = 0u; d < pc.rank; d++) {
-        bool is_reduced = (pc.reduce_axes.x == d ||
-                           pc.reduce_axes.y == d ||
-                           pc.reduce_axes.z == d ||
-                           pc.reduce_axes.w == d);
+        bool is_reduced = (pc.reduce_axes[0] == d ||
+                           pc.reduce_axes[1] == d ||
+                           pc.reduce_axes[2] == d ||
+                           pc.reduce_axes[3] == d ||
+                           pc.reduce_axes[4] == d ||
+                           pc.reduce_axes[5] == d ||
+                           pc.reduce_axes[6] == d ||
+                           pc.reduce_axes[7] == d);
         if (!is_reduced) {
             out_shape[out_rank] = pc.shape[d];
             out_stride[out_rank] = pc.stride[d];
@@ -101,7 +105,7 @@ void main() {
 
     // Compute the flattened reduction size (product over all reduction axes).
     uint flatReductionSize = 1u;
-    for (uint i = 0u; i < 4u; i++) {
+    for (uint i = 0u; i < MAX_RANK; i++) {
         uint red = pc.reduce_axes[i];
         if (red == 0xFFFFFFFFu) break;
         flatReductionSize *= pc.shape[red];
