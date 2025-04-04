@@ -48,6 +48,8 @@ layout(push_constant) uniform GemmPushConstants {
     uint b_batch_stride; // physical batch stride for B
     uint b_row_stride;   // physical row stride for B
     uint b_col_stride;   // physical column stride for B
+    uint a_base;
+    uint b_base;
     uint ldc;  // leading dimension of C per batch.
     float alpha; // scaling factor for A×B.
     float beta;  // scaling factor for C.
@@ -67,8 +69,8 @@ void main() {
     SUM_TYPE sum = SUM_TYPE(0);
     // Compute dot product for element (row, col) in the given batch.
     for (uint i = 0u; i < pc.k; i++) {
-        uint a_index = batch * pc.a_batch_stride + row * pc.a_row_stride + i * pc.a_col_stride;
-        uint b_index = batch * pc.b_batch_stride + i * pc.b_row_stride + col * pc.b_col_stride;
+        uint a_index = pc.a_base + batch * pc.a_batch_stride + row * pc.a_row_stride + i * pc.a_col_stride;
+        uint b_index = pc.b_base + batch * pc.b_batch_stride + i * pc.b_row_stride + col * pc.b_col_stride;
         sum += CAST_IN(a[a_index]) * CAST_IN(b[b_index]);
     }
 
