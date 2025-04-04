@@ -1,0 +1,78 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage         : require
+#extension GL_AMD_gpu_shader_half_float       : enable
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include "common.comp" // Ensure global_linear_id() is defined
+
+// --- Type Casting Macros ---
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x)+0x8000u)>>16u)
+    #define CAST_IN(x)  uintBitsToFloat(uint(x)<<16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x)  INNER_TYPE(x)
+#endif
+
+// --- Push Constants (Must match Rust struct exactly) ---
+layout(push_constant) uniform PushConstants {
+    // Input Layout [B, C, Lin]
+    uint in_base;
+    uint in_rank; // Expected: 3
+    uvec2 _pad_in;
+    uvec4 in_shape; // Padded to 4D
+    uvec4 in_stride; // Padded to 4D
+
+    // Output Dimensions & Scale Factor
+    uint b_size;  // For output gid decoding
+    uint c_size;  // For output gid decoding
+    uint l_out;   // Output Length
+    uint scale_l; // Scaling factor for L dimension
+    uint total_out_elems; // For bounds checking
+} pc;
+
+// --- Buffer Bindings ---
+layout(set = 0, binding = 0) readonly buffer InputBuffer { OUTER_TYPE input_data[]; };
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer { OUTER_TYPE output_data[]; }; // Assumed contiguous [B, C, Lout]
+
+// --- 3D Indexing Helper for Input ---
+// Physical index for Input [B, C, Lin]
+uint get_input_physical_index(uint b, uint c, uint l) {
+    // Uses first 3 components of stride/shape assuming rank 3
+    return pc.in_base + b * pc.in_stride.x + c * pc.in_stride.y + l * pc.in_stride.z;
+}
+
+// --- Main Kernel Logic ---
+void main() {
+    // Get flat global ID for the output element
+    uint gid = global_linear_id();
+
+    // Bounds check
+    if (gid >= pc.total_out_elems) return;
+
+    // Decode flat output index `gid` into logical output coordinates [b, c, ol]
+    // Output layout is assumed contiguous [B, C, Lout]
+    uint out_stride_b = pc.c_size * pc.l_out;
+    uint out_stride_c = pc.l_out;
+
+    uint b  = gid / out_stride_b;
+    uint rc = gid % out_stride_b;
+    uint c  = rc / out_stride_c; // Output Channel index
+    uint ol = rc % out_stride_c; // Output Length index
+
+    // Calculate corresponding *nearest* input coordinate
+    // Use float division for accuracy before floor
+    uint il = uint(floor(float(ol) / float(pc.scale_l)));
+
+    // Calculate physical index for the source input pixel
+    uint input_phys_idx = get_input_physical_index(b, c, il);
+
+    // Read the input value
+    INNER_TYPE in_val = CAST_IN(input_data[input_phys_idx]);
+
+    // Write the value to the output buffer at the calculated flat index
+    output_data[gid] = CAST_OUT(in_val);
+}
