@@ -13,6 +13,7 @@ layout(push_constant) uniform PushConstants {
     uvec4 shape;
     // strides for the input tensor.
     uvec4 strides;
+    uint base;
 } pc;
 
 layout(set = 0, binding = 0) readonly buffer InputData {
@@ -63,8 +64,8 @@ void main() {
     // Apply the rotary transformation exactly as in rope_i_slow:
     // y₀ = x₀ * cos - x₁ * sin,
     // y₁ = x₀ * sin + x₁ * cos.
-    float x0 = input_data[offset0];
-    float x1 = input_data[offset1];
+    float x0 = input_data[pc.base + offset0];
+    float x1 = input_data[pc.base + offset1];
     float y0 = x0 * c - x1 * s_val;
     float y1 = x0 * s_val + x1 * c;
 

@@ -23,6 +23,7 @@ layout(set = 0, binding = 1) writeonly buffer Output {
 
 // Parameters
 layout(push_constant) uniform PushConstants {
+    uint base;
     uint nrows;
     uint ncols;
     uint ncols_pad;
@@ -57,8 +58,8 @@ void main() {
                 uint i2 = shared_indices[ixj];
 
                 // Read values
-                TYPE v1 = i1 < pc.ncols ? input_data[row * pc.ncols + i1] : TYPE(0);
-                TYPE v2 = i2 < pc.ncols ? input_data[row * pc.ncols + i2] : TYPE(0);
+                TYPE v1 = i1 < pc.ncols ? input_data[pc.base + row * pc.ncols + i1] : TYPE(0);
+                TYPE v2 = i2 < pc.ncols ? input_data[pc.base + row * pc.ncols + i2] : TYPE(0);
 
                 bool swap;
                 if (i1 >= pc.ncols) {

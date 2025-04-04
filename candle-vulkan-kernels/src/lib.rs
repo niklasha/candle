@@ -1634,6 +1634,56 @@ impl Kernels {
                 configs.insert(name, config);
                 // Add BF16, F16 variants if needed...
             }
+
+            // --- UPSAMPLE_NEAREST1D KERNELS ---
+            {
+                let (name, config) = register_kernel!("upsample_nearest1d_f32", "src/upsample_nearest1d.comp",
+                    ("INNER_TYPE", "float"), ("OUTER_TYPE", "float"), ("BF16", "0")
+                );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("upsample_nearest1d_bf16", "src/upsample_nearest1d.comp",
+                    ("INNER_TYPE", "float"), ("OUTER_TYPE", "uint16_t"), ("BF16", "1")
+                );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("upsample_nearest1d_f16", "src/upsample_nearest1d.comp",
+                    ("INNER_TYPE", "float"), ("OUTER_TYPE", "float16_t"), ("BF16", "0")
+                );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("upsample_nearest1d_u8", "src/upsample_nearest1d.comp",
+                    ("INNER_TYPE", "uint8_t"), ("OUTER_TYPE", "uint8_t"), ("BF16", "0")
+                );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("upsample_nearest1d_u32", "src/upsample_nearest1d.comp",
+                    ("INNER_TYPE", "uint"), ("OUTER_TYPE", "uint"), ("BF16", "0")
+                );
+                configs.insert(name, config);
+                // Add other types if needed
+            }
+
+            // --- UPSAMPLE_NEAREST2D KERNELS ---
+            {
+                let (name, config) = register_kernel!("upsample_nearest2d_f32", "src/upsample_nearest2d.comp",
+                    ("INNER_TYPE", "float"), ("OUTER_TYPE", "float"), ("BF16", "0")
+                );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("upsample_nearest2d_bf16", "src/upsample_nearest2d.comp",
+                    ("INNER_TYPE", "float"), ("OUTER_TYPE", "uint16_t"), ("BF16", "1")
+                );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("upsample_nearest2d_f16", "src/upsample_nearest2d.comp",
+                    ("INNER_TYPE", "float"), ("OUTER_TYPE", "float16_t"), ("BF16", "0")
+                );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("upsample_nearest2d_u8", "src/upsample_nearest2d.comp",
+                    ("INNER_TYPE", "uint8_t"), ("OUTER_TYPE", "uint8_t"), ("BF16", "0") // Assuming direct copy
+                );
+                configs.insert(name, config);
+                let (name, config) = register_kernel!("upsample_nearest2d_u32", "src/upsample_nearest2d.comp",
+                    ("INNER_TYPE", "uint"), ("OUTER_TYPE", "uint"), ("BF16", "0") // Assuming direct copy
+                );
+                configs.insert(name, config);
+                // Add other types (I64?) if needed, adjusting INNER_TYPE/OUTER_TYPE
+            }
         }
 
         Ok(Self {

@@ -1,0 +1,132 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_AMD_gpu_shader_half_float : enable
+
+// Define local workgroup size (can be tuned)
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Include common helpers, ensure global_linear_id() is correctly defined
+#include "common.comp"
+
+// --- Type Casting Macros ---
+// Define how to cast between internal compute type (INNER_TYPE, usually float)
+// and the storage type (OUTER_TYPE) based on compilation flags.
+#if BF16
+    // Convert float to bfloat16 (stored as uint16_t)
+#define CAST_OUT(x) uint16_t((floatBitsToUint(x)+0x8000u)>>16u)
+    // Convert bfloat16 (stored as uint16_t) to float
+#define CAST_IN(x)  uintBitsToFloat(uint(x)<<16u)
+#else // Assuming F32, F16, U8, U32 etc. where INNER_TYPE matches OUTER_TYPE or uses direct casting
+    // Replace OUTER_TYPE and INNER_TYPE via compiler defines (e.g., -DINNER_TYPE=float -DOUTER_TYPE=float)
+#define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x)  INNER_TYPE(x)
+#endif
+
+// --- Push Constants ---
+// This structure MUST exactly match the layout and fields of the
+// 'UpsampleNearest2DPushConstants' struct defined and populated in the Rust host code.
+layout(push_constant) uniform PushConstants {
+    // Input Tensor Layout Info [B, C, Hin, Win]
+    uint in_base;        // Start offset of input tensor within its buffer
+    uint in_rank;        // Expected to be 4 for 2D Upsampling
+    uvec2 _pad_in;       // Padding for alignment (make sure Rust struct has this too)
+    uvec4 in_shape;      // Shape of the input tensor (padded to 4D if needed)
+    uvec4 in_stride;     // Strides of the input tensor (padded to 4D if needed)
+
+    // Output Dimensions (Target size)
+    uint b_size;         // Batch size (for decoding gid)
+    uint c_size;         // Number of channels (for decoding gid)
+    uint h_out;          // Target output height
+    uint w_out;          // Target output width
+
+    // Input Dimensions (Needed for scale calculation)
+    uint h_in;           // Original input height (in_shape.z)
+    uint w_in;           // Original input width (in_shape.w)
+
+    // Total number of elements in the output tensor (for bounds check)
+    uint total_out_elems;
+} pc;
+
+// --- Buffer Bindings ---
+// These bindings must match the order provided in the execute_compute_kernel call in Rust.
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    OUTER_TYPE input_data[]; // Contains the source tensor data
+};
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+    OUTER_TYPE output_data[]; // Destination for the upsampled tensor data
+    // Assumed to be allocated contiguously with shape [B, C, Hout, Wout]
+};
+
+// --- 4D Indexing Helper for Input ---
+// Calculates the physical buffer index for the input tensor given logical coordinates (b, c, h, w).
+// Uses the stride information and base offset provided in push constants.
+uint get_input_physical_index(uint b, uint c, uint h, uint w) {
+    // Calculate the offset relative to the start of the tensor view
+    uint relative_offset = b * pc.in_stride.x + // Stride B (index 0)
+                           c * pc.in_stride.y + // Stride C (index 1)
+                           h * pc.in_stride.z + // Correct: Use Stride H (index 2) for H coord
+                           w * pc.in_stride.w;  // Correct: Use Stride W (index 3) for W coord
+    // Add the base offset of the tensor view within its buffer
+    return pc.in_base + relative_offset;
+}
+
+// --- Main Kernel Logic ---
+void main() {
+    // Get the unique global identifier for this shader invocation (thread).
+    // Assumes 1D dispatch where gid ranges from 0 to (total_launched_threads - 1).
+    uint gid = global_linear_id();
+
+    // Bounds check: Ensure this thread corresponds to a valid output element.
+    // This is necessary because the number of launched threads might be slightly
+    // larger than total_out_elems due to workgroup padding.
+    if (gid >= pc.total_out_elems) {
+        return; // Threads outside the valid range do nothing.
+    }
+
+    // Decode gid into logical output coordinates [b, c, oh, ow] (NCHW order)
+    // Output layout is assumed contiguous [B, C, Hout, Wout].
+    uint out_stride_b = pc.c_size * pc.h_out * pc.w_out; // C*H*W
+    uint out_stride_c = pc.h_out * pc.w_out;             // H*W
+    uint out_stride_h = pc.w_out;                         // W (Stride W is 1, implicit)
+
+    uint b  = gid / out_stride_b;             // Calculate batch index
+    uint rc = gid % out_stride_b;             // Remainder after batch
+    uint c  = rc / out_stride_c;             // Calculate channel index
+    uint rh = rc % out_stride_c;             // Remainder after channel
+    uint oh = rh / out_stride_h;             // Correct: Divide by W to get H coord
+    uint ow = rh % out_stride_h;             // Correct: Modulo W to get W coord
+
+    // Calculate the scaling factors needed to map output coordinates back to input space.
+    // Use float for potentially non-integer scales, though not strictly needed for nearest.
+    // Avoid division by zero if input dimensions are zero (should be caught by host).
+    float scale_w_factor = (pc.w_in == 0) ? 1.0 : float(pc.w_out) / float(pc.w_in);
+    float scale_h_factor = (pc.h_in == 0) ? 1.0 : float(pc.h_out) / float(pc.h_in);
+
+    // Calculate the corresponding *nearest* input coordinates (ih, iw)
+    // by scaling the output coordinate back into the input space and taking the floor.
+    // This finds the top-left nearest source pixel for the output pixel.
+    // Avoid division by zero if scaling factor is zero.
+    float ow_in_float = (scale_w_factor == 0.0) ? float(ow) : float(ow) / scale_w_factor;
+    float oh_in_float = (scale_h_factor == 0.0) ? float(oh) : float(oh) / scale_h_factor;
+    uint iw = uint(floor(ow_in_float));
+    uint ih = uint(floor(oh_in_float));
+
+    // Note: Optional clamping (like Metal does) could be added here if necessary,
+    //       though mathematically floor should keep indices in bounds if scales are correct.
+    // iw = min(iw, pc.w_in - 1);
+    // ih = min(ih, pc.h_in - 1);
+
+    // Calculate the physical memory index for the identified source pixel
+    // using the calculated logical input coordinates (b, c, ih, iw).
+    uint input_physical_idx = get_input_physical_index(b, c, ih, iw);
+
+    // Read the value from the source input buffer using the calculated physical index.
+    // Use CAST_IN to handle potential type differences (e.g., BF16 -> Float).
+    INNER_TYPE input_value = CAST_IN(input_data[input_physical_idx]);
+
+    // Write the sampled value to the output buffer at the correct position (gid).
+    // Use CAST_OUT to handle potential type differences (e.g., Float -> BF16).
+    output_data[gid] = CAST_OUT(input_value);
+}

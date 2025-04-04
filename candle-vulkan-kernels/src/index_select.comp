@@ -31,8 +31,8 @@ layout(set = 0, binding = 2) buffer Output {
 layout(push_constant) uniform PushConstants {
     uint total_out_elems;
     uint rank;
+    uint base;
     uint selected_dim;
-    // For simplicity we assume rank ≤ 4.
     uvec4 input_strides;
     uvec4 output_strides;
 } pc;
@@ -45,7 +45,7 @@ void main() {
     // We assume the output tensor is stored in row-major order.
     uint remaining = linear_idx;
     // We'll compute the input linear index as we go.
-    uint input_linear = 0;
+    uint input_linear = pc.base;
 
     // Loop over dimensions.
     // For each dimension d, we decode the output coordinate "c" along that dimension.
