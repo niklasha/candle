@@ -1185,67 +1185,17 @@ impl Kernels {
 
         // --- COMPARISON (CMP) KERNELS ---
         {
-            let (name, config) = register_kernel!("eq_f32", "src/cmp.comp",
-                ("OP", "=="),
-                ("TYPE", "float")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("ne_f32", "src/cmp.comp",
-                ("OP", "!="),
-                ("TYPE", "float")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("lt_f32", "src/cmp.comp",
-                ("OP", "<"),
-                ("TYPE", "float")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gt_f32", "src/cmp.comp",
-                ("OP", ">"),
-                ("TYPE", "float")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("le_f32", "src/cmp.comp",
-                ("OP", "<="),
-                ("TYPE", "float")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("ge_f32", "src/cmp.comp",
-                ("OP", ">="),
-                ("TYPE", "float")
-            );
-            configs.insert(name, config);
-
-            let (name, config) = register_kernel!("eq_i64", "src/cmp.comp",
-                ("OP", "=="),
-                ("TYPE", "int64_t")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("ne_i64", "src/cmp.comp",
-                ("OP", "!="),
-                ("TYPE", "int64_t")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("lt_i64", "src/cmp.comp",
-                ("OP", "<"),
-                ("TYPE", "int64_t")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gt_i64", "src/cmp.comp",
-                ("OP", ">"),
-                ("TYPE", "int64_t")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("le_i64", "src/cmp.comp",
-                ("OP", "<="),
-                ("TYPE", "int64_t")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("ge_i64", "src/cmp.comp",
-                ("OP", ">="),
-                ("TYPE", "int64_t")
-            );
-            configs.insert(name, config);
+            for (dtype, glsl_type) in [("u8", "uint8_t"), ("u32", "uint"), ("i64", "int64_t"), ("f32", "float"), ("f16", "float16_t"), ("bf16", "uint16_T")] {
+                for (op_name, op) in [("eq", "=="), ("ne", "!="), ("lt", "<"), ("gt", ">"), ("le", "<="), ("ge", ">=")] {
+                    let (name, config) = register_kernel!(
+                        format!("{}_{}", op_name, dtype),
+                        "src/cmp.comp",
+                        ("OP", op),
+                        ("TYPE", glsl_type)
+                    );
+                    configs.insert(name, config);
+                }
+            }
         }
 
         // --- RANDOM KERNELS ---
