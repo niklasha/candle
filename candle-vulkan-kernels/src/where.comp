@@ -23,11 +23,13 @@ layout(set = 0, binding = 3) buffer OutputBuffer {
 };
 layout(push_constant) uniform PushConstants {
     uint elem_count;
+    uint base;
 } pc;
 
 // Conditional main() selection based on the define.
 void main() {
     uint idx = global_linear_id();
     if (idx >= pc.elem_count) { return; }
+    idx += pc.base;
     output_data[idx] = uint(cond[idx]) != 0 ? t[idx] : f[idx];
 }

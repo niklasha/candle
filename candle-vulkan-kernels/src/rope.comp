@@ -10,6 +10,7 @@ layout(local_size_x = 256) in;
 layout(push_constant) uniform PushConstants {
     uvec4 shape;
     uvec4 strides;
+    uint base;
 } pc;
 
 layout(set = 0, binding = 0) readonly buffer InputData { INNER_TYPE input_data[]; };
@@ -43,7 +44,7 @@ void main() {
     uint offset = bsz * pc.strides.x + head * pc.strides.y + seq * pc.strides.z + dim * pc.strides.w;
     #endif
 
-    INNER_TYPE val = CAST_IN(input_data[offset]);
+    INNER_TYPE val = CAST_IN(input_data[pc.base + offset]);
 
     uint half_dim = pc.shape.w / 2;
     uint idx = seq * half_dim + dim % half_dim;

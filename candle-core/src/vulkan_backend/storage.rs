@@ -358,7 +358,7 @@ impl VulkanStorage {
             let mut b_shape_arr = [1u32; 4];
             let mut b_stride_arr = [1u32; 4];
             for i in 0..b_shape_slice.rank().min(4) {
-                b_shape_arr[i] = (b_shape_slice.dim(i).unwrap())
+                b_shape_arr[i] = b_shape_slice.dim(i).unwrap()
                     .try_into()
                     .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
             }
@@ -699,13 +699,14 @@ impl VulkanStorage {
             #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
             struct GatherPushConstants {
                 total_out_elems: u32,
+                base: u32,
                 rank: u32,
                 selected_dim: u32,
-                _pad: u32,
                 input_strides: [u32; 4],
                 output_strides: [u32; 4],
             }
 
+            let base = src_layout.start_offset() as u32;
             let rank = src_layout.shape().rank();
             let total_out_elems = index_layout.shape().elem_count() as u32;
 
@@ -719,8 +720,8 @@ impl VulkanStorage {
             let push_constants = GatherPushConstants {
                 total_out_elems,
                 rank: rank as u32,
+                base,
                 selected_dim: dim as u32,
-                _pad: 0,
                 input_strides: padded_in_strides,
                 output_strides: padded_out_strides,
             };
@@ -761,14 +762,17 @@ impl VulkanStorage {
             struct ScatterAddPushConstants {
                 total_src_elems: u32,
                 rank: u32,
-                selected_dim: u32,
-                _pad: u32,
+                in_base: u32,
+                out_base: u32,
                 input_strides: [u32; 4],
                 output_strides: [u32; 4],
+                selected_dim: u32,
             }
 
             let rank = src_layout.shape().rank();
+            let in_base = src_layout.start_offset() as u32;
             let total_src_elems = src_layout.shape().elem_count() as u32;
+            let out_base = layout.start_offset() as u32;
 
             // Prepare padded strides
             let mut padded_input_strides = [0u32; 4];
@@ -782,8 +786,9 @@ impl VulkanStorage {
             let push_constants = ScatterAddPushConstants {
                 total_src_elems,
                 rank: rank as u32,
+                in_base,
+                out_base,
                 selected_dim: dim as u32,
-                _pad: 0,
                 input_strides: padded_input_strides,
                 output_strides: padded_output_strides,
             };
@@ -825,17 +830,18 @@ impl VulkanStorage {
             #[repr(C)]
             #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
             struct IndexSelectPushConstants {
-                total_out_elems: u32, // total number of output elements
-                rank: u32,            // rank of the tensor
-                selected_dim: u32,    // the dimension to select over
-                _pad0: u32,
-                input_strides: [u32; 4],  // input strides (row-major), padded
-                output_strides: [u32; 4], // output strides, padded
+                total_out_elems: u32,
+                rank: u32,
+                base: u32,
+                selected_dim: u32,
+                input_strides: [u32; 4],
+                output_strides: [u32; 4],
             }
 
             // Get the input shape and strides from the source layout.
             let src_shape: Vec<usize> = src_layout.shape().dims().to_vec();
             let rank = src_shape.len();
+            let base = src_layout.start_offset() as u32;
             let input_strides: Vec<u32> = src_layout.stride().iter().map(|&s| s as u32).collect();
 
             // Compute the output shape by replacing the selected dimension with the index tensor's length.
@@ -864,8 +870,8 @@ impl VulkanStorage {
             let push_constants = IndexSelectPushConstants {
                 total_out_elems,
                 rank: rank as u32,
+                base,
                 selected_dim: dim as u32,
-                _pad0: 0,
                 input_strides: [
                     padded_input_strides[0],
                     padded_input_strides[1],
@@ -921,15 +927,18 @@ impl VulkanStorage {
             struct IndexAddPushConstants {
                 total_src_elems: u32,
                 rank: u32,
-                selected_dim: u32,
-                _pad0: u32,
+                in_base: u32,
+                out_base: u32,
                 input_strides: [u32; 4],
                 output_strides: [u32; 4],
+                selected_dim: u32,
             }
 
             let src_shape = src_layout.shape().dims();
             let dst_shape = dst_layout.shape().dims();
             let rank = src_shape.len();
+            let in_base = src_layout.start_offset() as u32;
+            let out_base = dst_layout.start_offset() as u32;
 
             if rank != dst_shape.len() {
                 Err(VulkanError::Message("Rank mismatch in index_add".into()))?;
@@ -948,8 +957,8 @@ impl VulkanStorage {
             let push_constants = IndexAddPushConstants {
                 total_src_elems,
                 rank: rank as u32,
-                selected_dim: dim as u32,
-                _pad0: 0,
+                in_base,
+                out_base,
                 input_strides: [
                     padded_input_strides[0],
                     padded_input_strides[1],
@@ -962,6 +971,7 @@ impl VulkanStorage {
                     padded_output_strides[2],
                     padded_output_strides[3],
                 ],
+                selected_dim: dim as u32,
             };
 
             self.pending_future.sync_if_needed()?;
@@ -1155,6 +1165,7 @@ impl VulkanStorage {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct ArgSortPushConstants {
+            base: u32,
             nrows: u32,
             ncols: u32,
             ncols_pad: u32,
@@ -1162,6 +1173,7 @@ impl VulkanStorage {
         }
 
         let el = layout.shape().elem_count();
+        let base = layout.start_offset() as u32;
         let ncols = layout.shape().dims().last().copied().unwrap_or(1);
         let nrows = el / ncols;
         let ncols_pad = ncols.next_power_of_two();
@@ -1171,6 +1183,7 @@ impl VulkanStorage {
         }
 
         let push_constants = ArgSortPushConstants {
+            base,
             nrows: nrows as u32,
             ncols: ncols as u32,
             ncols_pad: ncols_pad as u32,
@@ -1205,14 +1218,17 @@ impl VulkanStorage {
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct PushConstants {
             elem_count: u32,
+            base: u32,
         }
 
         let elem_count = layout.shape().elem_count();
+        let base = layout.start_offset() as u32;
         let device = self.device();
         let new_storage = unsafe { device.alloc_uninit(layout.shape(), self.dtype)? };
 
         let push_constants = PushConstants {
             elem_count: elem_count as u32,
+            base,
         };
 
         cond.pending_future.sync_if_needed()?;
@@ -1706,6 +1722,176 @@ impl VulkanStorage {
         Ok(new_storage)
     }
 
+    fn upsample_nearest1d_op_impl(
+        &self,
+        layout: &Layout,
+        scale_l: usize,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<Self> {
+        // --- Push Constant Struct Definition ---
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+        struct UpsampleNearest1DPushConstants {
+            // Input Layout [B, C, Lin]
+            in_base: u32,
+            in_rank: u32, // Expected: 3
+            _pad_in: [u32; 2],
+            in_shape: [u32; 4],  // Padded to 4D
+            in_stride: [u32; 4], // Padded to 4D
+
+            // Output Dimensions & Scale Factor
+            b_size: u32,          // For output gid decoding
+            c_size: u32,          // For output gid decoding
+            l_out: u32,           // Output Length
+            scale_l: u32,         // Scaling factor for L dimension
+            total_out_elems: u32, // For bounds checking
+        }
+
+        let in_dims = layout.shape().dims();
+        let b_size = in_dims[0];
+        let c_size = in_dims[1];
+        let l_in = in_dims[2];
+
+        let l_out = l_in * scale_l;
+        let out_shape = Shape::from(&[b_size, c_size, l_out]); // Rank 3 output
+
+        // --- Allocate Output ---
+        let device = self.device();
+        let new_storage = unsafe { device.alloc_uninit(&out_shape, self.dtype())? };
+        let output_buffer = (*new_storage.buffer).clone().unwrap(); // Should exist
+
+        // --- Extract Input Layout (Pad to 4D for struct consistency) ---
+        let in_shape_slice = layout.shape();
+        let in_stride_slice = layout.stride();
+        let in_rank = in_shape_slice.rank() as u32; // Will be 3
+        let mut in_shape_arr = [1u32; 4];
+        let mut in_stride_arr = [1u32; 4];
+        for i in 0..(in_rank as usize).min(4) {
+            // Loop 3 times
+            in_shape_arr[i] = in_shape_slice.dims()[i] as u32;
+            // Handle potentially shorter stride slice (though unlikely for rank 3)
+            if i < in_stride_slice.len() {
+                in_stride_arr[i] = in_stride_slice[i] as u32;
+            } else {
+                // Should not happen if rank == stride.len()
+                in_stride_arr[i] = 1; // Default for safety
+            }
+        }
+        let in_base = layout.start_offset() as u32;
+
+        // --- Populate Push Constants ---
+        let total_out_elems = out_shape.elem_count() as u32;
+        let push_constants = UpsampleNearest1DPushConstants {
+            in_base,
+            in_rank, // Pass actual rank (3)
+            _pad_in: [0; 2],
+            in_shape: in_shape_arr,
+            in_stride: in_stride_arr,
+
+            b_size: b_size as u32,
+            c_size: c_size as u32,
+            l_out: l_out as u32,
+            scale_l: scale_l as u32,
+            total_out_elems,
+        };
+
+        // --- Synchronization and Dispatch ---
+        self.pending_future.sync_if_needed()?;
+
+        new_storage.execute_compute_kernel(
+            pipeline,
+            vec![(*self.buffer).clone().unwrap()], // Input buffer
+            vec![output_buffer],                   // Output buffer
+            [total_out_elems, 1, 1],               // Dispatch one thread per output element
+            push_constants,
+            false, // Let helper calculate workgroups
+        )?;
+
+        Ok(new_storage)
+    }
+
+    fn upsample_nearest2d_op_impl(
+        &self,
+        layout: &Layout,
+        out_h: usize,
+        out_w: usize,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<Self> {
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+        struct UpsampleNearest2DPushConstants {
+            // Input Layout [B, C, Hin, Win]
+            in_base: u32, in_rank: u32, _pad_in: [u32; 2], in_shape: [u32; 4], in_stride: [u32; 4],
+            // Output Dimensions
+            b_size: u32, c_size: u32, h_out: u32, w_out: u32,
+            // Input Dimensions needed for scale calculation in shader
+            h_in: u32, w_in: u32,
+            total_out_elems: u32,
+        }
+
+        // --- Input Validation & Shape Calculation ---
+        let in_dims = layout.shape().dims();
+        if in_dims.len() != 4 { /* ... error ... */ }
+        // Validate out_h, out_w perhaps?
+        if out_h == 0 || out_w == 0 {
+            return Err(crate::Error::Msg(
+                "upsample_nearest2d output dimensions cannot be zero".to_string()
+            ).bt());
+        }
+
+        let b_size = in_dims[0];
+        let c_size = in_dims[1];
+        let h_in = in_dims[2];
+        let w_in = in_dims[3];
+
+        // Output shape uses the provided out_h, out_w (correct order now)
+        let out_shape = Shape::from(&[b_size, c_size, out_h, out_w]);
+
+        // --- Allocate Output ---
+        let device = self.device();
+        let new_storage = unsafe { device.alloc_uninit(&out_shape, self.dtype())? };
+        let output_buffer = (*new_storage.buffer).clone().unwrap();
+
+        // --- Extract Input Layout ---
+        let in_shape_slice = layout.shape();
+        let in_stride_slice = layout.stride();
+        let mut in_shape_arr = [1u32; 4];
+        let mut in_stride_arr = [1u32; 4];
+        for i in 0..4 {
+            in_shape_arr[i] = in_shape_slice.dims()[i] as u32;
+            in_stride_arr[i] = in_stride_slice[i] as u32;
+        }
+        let in_base = layout.start_offset() as u32;
+
+        // --- Populate Push Constants ---
+        let total_out_elems = out_shape.elem_count() as u32;
+        let push_constants = UpsampleNearest2DPushConstants {
+            in_base, in_rank: 4, _pad_in: [0; 2], in_shape: in_shape_arr, in_stride: in_stride_arr,
+
+            b_size: b_size as u32,
+            c_size: c_size as u32,
+            h_out: out_h as u32,
+            w_out: out_w as u32,
+            h_in: h_in as u32,
+            w_in: w_in as u32,
+            total_out_elems,
+        };
+println!("pc {:?}", push_constants);
+        // --- Synchronization and Dispatch ---
+        self.pending_future.sync_if_needed()?;
+
+        new_storage.execute_compute_kernel(
+            pipeline,
+            vec![(*self.buffer).clone().unwrap()],
+            vec![output_buffer],
+            [total_out_elems, 1, 1],
+            push_constants,
+            false,
+        )?;
+
+        Ok(new_storage)
+    }
+
     pub fn layernorm_op_impl(
         &self,
         layout: &Layout,
@@ -1906,6 +2092,7 @@ impl VulkanStorage {
         struct PushConstants {
             shape: [u32; 4],
             strides: [u32; 4],
+            base: u32,
         }
 
         let input_buf = (*self.buffer)
@@ -1925,6 +2112,7 @@ impl VulkanStorage {
                 shape
             )))?;
         }
+        let base = layout.start_offset() as u32;
 
         let out = unsafe { self.device().alloc_uninit(layout.shape(), self.dtype)? };
 
@@ -1948,7 +2136,7 @@ impl VulkanStorage {
             .try_into()
             .unwrap();
 
-        let push_constants = PushConstants { shape, strides };
+        let push_constants = PushConstants { shape, strides, base };
 
         let total_elems = layout.shape().elem_count() as u32;
 
@@ -1979,6 +2167,7 @@ impl VulkanStorage {
         struct PushConstants {
             shape: [u32; 4],
             strides: [u32; 4],
+            base: u32,
         }
 
         // Retrieve input buffers.
@@ -2000,6 +2189,7 @@ impl VulkanStorage {
                 dims
             )))?;
         }
+        let base = layout.start_offset() as u32;
         let shape: [u32; 4] = dims
             .iter()
             .map(|&d| d as u32)
@@ -2009,7 +2199,7 @@ impl VulkanStorage {
         let strides_vec: Vec<u32> = layout.stride().iter().map(|&s| s as u32).collect();
         let strides: [u32; 4] = strides_vec.try_into().unwrap();
 
-        let push_constants = PushConstants { shape, strides };
+        let push_constants = PushConstants { shape, strides, base };
 
         // Allocate output storage with the same shape and data type.
         let out = unsafe { self.device().alloc_uninit(layout.shape(), self.dtype())? };
@@ -2544,12 +2734,50 @@ impl BackendStorage for VulkanStorage {
         fail!()
     }
 
-    fn upsample_nearest1d(&self, _: &Layout, _: usize) -> Result<Self> {
-        fail!()
+    fn upsample_nearest1d(&self, layout: &Layout, scale_l: usize) -> Result<Self> {
+        let suffix = match self.dtype() {
+            DType::F32 => "f32",
+            DType::BF16 => "bf16",
+            DType::F16 => "f16",
+            DType::U8 => "u8",
+            DType::U32 => "u32",
+            _ => crate::bail!(
+                "Vulkan upsample_nearest1d unsupported dtype {:?}",
+                self.dtype()
+            ),
+        };
+        let key = format!("upsample_nearest1d_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key, None)
+            .map_err(VulkanError::from)?;
+
+        self.upsample_nearest1d_op_impl(layout, scale_l, &pipeline)
     }
 
-    fn upsample_nearest2d(&self, _: &Layout, _: usize, _: usize) -> Result<Self> {
-        fail!()
+    fn upsample_nearest2d(&self, layout: &Layout, out_h: usize, out_w: usize) -> Result<Self> {
+        let suffix = match self.dtype() {
+            // Use self.dtype()
+            DType::F32 => "f32",
+            DType::BF16 => "bf16",
+            DType::F16 => "f16",
+            DType::U8 => "u8",
+            DType::U32 => "u32",
+            // Add I64 etc. if implemented
+            _ => crate::bail!(
+                "Vulkan upsample_nearest2d unsupported dtype {:?}",
+                self.dtype()
+            ),
+        };
+        let key = format!("upsample_nearest2d_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key, None)
+            .map_err(VulkanError::from)?; // Map error
+
+        self.upsample_nearest2d_op_impl(layout, out_h, out_w, &pipeline)
     }
 
     fn gather(
