@@ -13,6 +13,9 @@ use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint};
 use vulkano::sync::GpuFuture;
 
+// The maximum rank of tensors supported by the Vulkan backend.
+const MAX_RANK: usize = 8;
+
 pub struct GpuFutureHolder {
     future: Arc<Mutex<Option<Box<dyn GpuFuture + Send>>>>,
 }
@@ -358,7 +361,9 @@ impl VulkanStorage {
             let mut b_shape_arr = [1u32; 4];
             let mut b_stride_arr = [1u32; 4];
             for i in 0..b_shape_slice.rank().min(4) {
-                b_shape_arr[i] = b_shape_slice.dim(i).unwrap()
+                b_shape_arr[i] = b_shape_slice
+                    .dim(i)
+                    .unwrap()
                     .try_into()
                     .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
             }
@@ -414,10 +419,9 @@ impl VulkanStorage {
         struct ReducePushConstants {
             base: u32,
             rank: u32,
-            _pad0: [u32; 2],
-            shape: [u32; 4],
-            stride: [u32; 4],
-            reduce_axes: [u32; 4],
+            shape: [u32; MAX_RANK],
+            stride: [u32; MAX_RANK],
+            reduce_axes: [u32; MAX_RANK], // XXX make this a bitmap?
         }
 
         #[repr(C)]
@@ -442,34 +446,40 @@ impl VulkanStorage {
             // Build tensor metadata.
             let shape_slice = layout.shape();
             let stride_slice = layout.stride();
-            let rank = shape_slice.rank() as u32;
-            let mut shape_arr = [1u32; 4];
-            let mut stride_arr = [1u32; 4];
-            for i in 0..(rank as usize).min(4) {
+            let rank = shape_slice.rank();
+            if rank > MAX_RANK {
+                return Err(VulkanError::Message(format!(
+                    "Vulkan backend only supports rank up to {}, got {}",
+                    MAX_RANK, rank
+                ))
+                .into());
+            }
+            let mut shape_arr = [1u32; MAX_RANK];
+            let mut stride_arr = [1u32; MAX_RANK];
+            for i in 0..rank.min(MAX_RANK) {
                 shape_arr[i] = shape_slice
                     .dim(i)
                     .unwrap()
                     .try_into()
                     .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
             }
-            for i in 0..stride_slice.len().min(4) {
+            for i in 0..stride_slice.len().min(MAX_RANK) {
                 stride_arr[i] = (*stride_slice.get(i).unwrap()) as u32;
             }
             let base = layout.start_offset() as u32;
             // Build reduce_axes array; unused entries are filled with u32::MAX.
-            let reduce_axes_arr: [u32; 4] = reduce_axes
+            let reduce_axes_arr: [u32; MAX_RANK] = reduce_axes
                 .iter()
                 .map(|&ax| ax as u32)
                 .chain(std::iter::repeat(u32::MAX))
-                .take(4)
+                .take(MAX_RANK)
                 .collect::<Vec<_>>()
                 .try_into()
                 .unwrap();
 
             let push_constants = ReducePushConstants {
                 base,
-                rank,
-                _pad0: [0; 2],
+                rank: rank as u32,
                 shape: shape_arr,
                 stride: stride_arr,
                 reduce_axes: reduce_axes_arr,
@@ -1821,11 +1831,19 @@ impl VulkanStorage {
         #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
         struct UpsampleNearest2DPushConstants {
             // Input Layout [B, C, Hin, Win]
-            in_base: u32, in_rank: u32, _pad_in: [u32; 2], in_shape: [u32; 4], in_stride: [u32; 4],
+            in_base: u32,
+            in_rank: u32,
+            _pad_in: [u32; 2],
+            in_shape: [u32; 4],
+            in_stride: [u32; 4],
             // Output Dimensions
-            b_size: u32, c_size: u32, h_out: u32, w_out: u32,
+            b_size: u32,
+            c_size: u32,
+            h_out: u32,
+            w_out: u32,
             // Input Dimensions needed for scale calculation in shader
-            h_in: u32, w_in: u32,
+            h_in: u32,
+            w_in: u32,
             total_out_elems: u32,
         }
 
@@ -1835,8 +1853,9 @@ impl VulkanStorage {
         // Validate out_h, out_w perhaps?
         if out_h == 0 || out_w == 0 {
             return Err(crate::Error::Msg(
-                "upsample_nearest2d output dimensions cannot be zero".to_string()
-            ).bt());
+                "upsample_nearest2d output dimensions cannot be zero".to_string(),
+            )
+            .bt());
         }
 
         let b_size = in_dims[0];
@@ -1866,7 +1885,11 @@ impl VulkanStorage {
         // --- Populate Push Constants ---
         let total_out_elems = out_shape.elem_count() as u32;
         let push_constants = UpsampleNearest2DPushConstants {
-            in_base, in_rank: 4, _pad_in: [0; 2], in_shape: in_shape_arr, in_stride: in_stride_arr,
+            in_base,
+            in_rank: 4,
+            _pad_in: [0; 2],
+            in_shape: in_shape_arr,
+            in_stride: in_stride_arr,
 
             b_size: b_size as u32,
             c_size: c_size as u32,
@@ -1876,7 +1899,7 @@ impl VulkanStorage {
             w_in: w_in as u32,
             total_out_elems,
         };
-println!("pc {:?}", push_constants);
+        println!("pc {:?}", push_constants);
         // --- Synchronization and Dispatch ---
         self.pending_future.sync_if_needed()?;
 
@@ -2136,7 +2159,11 @@ println!("pc {:?}", push_constants);
             .try_into()
             .unwrap();
 
-        let push_constants = PushConstants { shape, strides, base };
+        let push_constants = PushConstants {
+            shape,
+            strides,
+            base,
+        };
 
         let total_elems = layout.shape().elem_count() as u32;
 
@@ -2199,7 +2226,11 @@ println!("pc {:?}", push_constants);
         let strides_vec: Vec<u32> = layout.stride().iter().map(|&s| s as u32).collect();
         let strides: [u32; 4] = strides_vec.try_into().unwrap();
 
-        let push_constants = PushConstants { shape, strides, base };
+        let push_constants = PushConstants {
+            shape,
+            strides,
+            base,
+        };
 
         // Allocate output storage with the same shape and data type.
         let out = unsafe { self.device().alloc_uninit(layout.shape(), self.dtype())? };
@@ -2488,6 +2519,7 @@ impl BackendStorage for VulkanStorage {
     fn cmp(&self, cmp_op: CmpOp, rhs: &Self, layout: &Layout, rhs_layout: &Layout) -> Result<Self> {
         let suffix = match (self.dtype, rhs.dtype) {
             (DType::F32, DType::F32) => "f32",
+            (DType::U32, DType::U32) => "u32",
             (DType::I64, DType::I64) => "i64",
             _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, rhs.dtype),
         };
