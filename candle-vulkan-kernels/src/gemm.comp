@@ -1,9 +1,10 @@
 #version 450
 
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
-#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable // For half/float16_t
+#extension GL_EXT_shader_16bit_storage : enable                 // For storageBuffer types like uint16_t
 
-// Use a tiled 16×16 workgroup (the batch is handled via z-dimension).
+// Tiled workgroup size for potential optimization (16x16 is common)
+// Batch dimension is handled by the Z dimension of the dispatch grid
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 #include "common.comp"
@@ -18,63 +19,104 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
     #define SUM_TYPE TYPE
 #endif
 
-// Matrix A (read-only).
-// It is assumed to be laid out as b batches, each with m rows and k columns.
 layout(set = 0, binding = 0) readonly buffer MatrixA {
-    TYPE a[];
+    TYPE a[]; // Data for matrix A
 };
 
-// Matrix B (read-only).
-// It is assumed to be laid out as b batches, each with k rows and n columns.
 layout(set = 0, binding = 1) readonly buffer MatrixB {
-    TYPE b[];
+    TYPE b[]; // Data for matrix B
 };
 
-// Matrix C (read-write).
-// It is assumed to be laid out as b batches, each with m rows and n columns.
 layout(set = 0, binding = 2) buffer MatrixC {
-    TYPE c[];
+    TYPE c[]; // Data for matrix C
 };
 
-// Push constants provide dimensions and scaling factors.
-// The layout assumes that in each batch, A is (m x k), B is (k x n) and C is (m x n).
+// Provides dimensions, strides (based on meaning), base offsets, and scale factors.
+// Must exactly match the layout of the GemmPushConstants struct in Rust.
 layout(push_constant) uniform GemmPushConstants {
-    uint m;    // number of rows in A and C per batch.
-    uint n;    // number of columns in B and C per batch.
-    uint k;    // number of columns in A and rows in B per batch.
-    uint a_batch_stride; // physical batch stride for A (e.g. layout.stride()[0])
-    uint a_row_stride;   // physical row stride for A (e.g. layout.stride()[rank-2])
-    uint a_col_stride;   // physical column stride for A (e.g. layout.stride()[rank-1])
-    uint b_batch_stride; // physical batch stride for B
-    uint b_row_stride;   // physical row stride for B
-    uint b_col_stride;   // physical column stride for B
-    uint a_base;
-    uint b_base;
-    uint ldc;  // leading dimension of C per batch.
-    float alpha; // scaling factor for A×B.
-    float beta;  // scaling factor for C.
+    // Core dimensions
+    uint m; // Rows in A & C
+    uint n; // Columns in B & C
+    uint k; // Inner dimension (Columns A, Rows B)
+
+    // Strides for A (e.g., [B, H, M, K]) - Identified by meaning
+    uint a_stride_bh; // Stride for flattened batch/head dimension(s)
+    uint a_stride_m;  // Physical stride corresponding to M dimension (rows of A)
+    uint a_stride_k;  // Physical stride corresponding to K dimension (inner product)
+
+    // Strides for B (e.g., [B, H, K, N]) - Identified by meaning
+    uint b_stride_bh; // Stride for flattened batch/head dimension(s)
+    uint b_stride_k;  // Physical stride corresponding to K dimension (inner product)
+    uint b_stride_n;  // Physical stride corresponding to N dimension (columns of B)
+
+    // Base Offsets
+    uint a_base;      // Start offset for matrix A in its buffer
+    uint b_base;      // Start offset for matrix B in its buffer
+    // uint c_base;   // Optional: Start offset for matrix C (usually 0 for output)
+
+    // Output C layout
+    uint ldc;         // Leading Dimension of C (stride between rows M, usually == N for contiguous)
+    uint c_stride_bh; // Stride for flattened batch/head dimension(s) XXX not used yet
+
+    // Scaling Factors
+    float alpha;      // Scale factor for A * B product
+    float beta;       // Scale factor for existing C value
 } pc;
 
+// --- Main Kernel Logic ---
 void main() {
-    // Use a 3D dispatch:
-    // gl_GlobalInvocationID.x -> column,
-    // gl_GlobalInvocationID.y -> row,
-    // gl_GlobalInvocationID.z -> batch index.
-    uint col   = gl_GlobalInvocationID.x;
-    uint row   = gl_GlobalInvocationID.y;
-    uint batch = gl_GlobalInvocationID.z;
+    // --- Determine Output Element ---
+    // Map the 3D Vulkan dispatch grid to logical coordinates (Batch, M, N)
+    // Assumes wg_z maps to flattened batch, wg_y to M dimension, wg_x to N dimension
+    uint col   = gl_GlobalInvocationID.x; // Corresponds to N dimension index
+    uint row   = gl_GlobalInvocationID.y; // Corresponds to M dimension index
+    uint batch = gl_GlobalInvocationID.z; // Corresponds to flattened B*H dimension index
 
-    if (row >= pc.m || col >= pc.n) return;
+    // --- Bounds Check ---
+    // Prevent threads outside the actual matrix dimensions from working
+    if (row >= pc.m || col >= pc.n) {
+        return;
+    }
 
-    SUM_TYPE sum = SUM_TYPE(0);
-    // Compute dot product for element (row, col) in the given batch.
-    for (uint i = 0u; i < pc.k; i++) {
-        uint a_index = pc.a_base + batch * pc.a_batch_stride + row * pc.a_row_stride + i * pc.a_col_stride;
-        uint b_index = pc.b_base + batch * pc.b_batch_stride + i * pc.b_row_stride + col * pc.b_col_stride;
+    // --- Accumulation ---
+    SUM_TYPE sum = SUM_TYPE(0.0); // Initialize accumulator (use SUM_TYPE for precision)
+
+    // Compute dot product C[batch, row, col] = sum(A[batch, row, i] * B[batch, i, col]) for i=0..k-1
+    for (uint i = 0u; i < pc.k; i++) { // Iterate along the inner dimension K
+        // Calculate physical index for A[batch, row, i]
+        uint a_offset = batch * pc.a_stride_bh // Offset for batch/head
+            + row   * pc.a_stride_m  // Offset for M dim (row)
+            + i     * pc.a_stride_k; // Offset for K dim (inner loop)
+        uint a_index = pc.a_base + a_offset;
+
+        // Calculate physical index for B[batch, i, col]
+        uint b_offset = batch * pc.b_stride_bh // Offset for batch/head
+            + i     * pc.b_stride_k  // Offset for K dim (inner loop)
+            + col   * pc.b_stride_n; // Offset for N dim (column)
+        uint b_index = pc.b_base + b_offset;
+
+        // Read values, cast to accumulation type, multiply, and add
         sum += CAST_IN(a[a_index]) * CAST_IN(b[b_index]);
     }
 
-    // Compute index into C: batch offset + row * ldc + col.
-    uint c_index = batch * (pc.m * pc.ldc) + row * pc.ldc + col;
-    c[c_index] = CAST_OUT(SUM_TYPE(pc.alpha) * sum + SUM_TYPE(pc.beta) * CAST_IN(c[c_index]));
+    // --- Output Calculation and Write ---
+    // C = alpha * (A*B) + beta * C
+
+    // Calculate physical index for C[batch, row, col]
+    // Assumes batches are contiguous and uses leading dimension 'ldc' for rows.
+    // Assumes c_base is 0 (output buffer starts at 0)
+    uint c_batch_stride = pc.m * pc.ldc; // Stride between start of batches in C
+    uint c_index = batch * c_batch_stride // Batch offset
+        + row   * pc.ldc         // Row offset (uses leading dimension)
+        + col;                   // Column offset
+
+    // Read previous value of C if beta is non-zero
+    // Cast old C value to accumulation type for calculation
+    SUM_TYPE old_c_value = (pc.beta == 0.0) ? SUM_TYPE(0.0) : CAST_IN(c[c_index]);
+
+    // Calculate final value: alpha * sum + beta * old_c
+    SUM_TYPE final_value = SUM_TYPE(pc.alpha) * sum + SUM_TYPE(pc.beta) * old_c_value;
+
+    // Cast final value to storage type and write to output buffer
+    c[c_index] = CAST_OUT(final_value);
 }
