@@ -195,7 +195,9 @@ impl VulkanStorage {
         let future = command_buffer
             .execute(device.queue.clone())
             .map_err(VulkanError::CommandBufferExecError);
-        if future.is_err() { println!("ERR"); }
+        if future.is_err() {
+            println!("ERR");
+        }
         let future = future?;
         self.pending_future.set_future(Box::new(future))?;
         Ok(())
@@ -273,7 +275,7 @@ impl VulkanStorage {
                     "Vulkan backend only supports rank up to {}, got {}",
                     MAX_RANK, rank
                 ))
-                    .into());
+                .into());
             }
 
             let elem_count = layout.shape().elem_count();
@@ -351,7 +353,7 @@ impl VulkanStorage {
                     "Vulkan backend only supports rank up to {}, got {} and {}",
                     MAX_RANK, a_rank, b_rank
                 ))
-                    .into());
+                .into());
             }
 
             let elem_count = layout.shape().elem_count();
@@ -1289,10 +1291,10 @@ impl VulkanStorage {
         struct Conv1DPushConstants {
             // Input Layout Info (Rank 3, padded to 4)
             in_base: u32,
-            in_rank: u32,        // Expected value: 3
+            in_rank: u32, // Expected value: 3
             ker_base: u32,
             ker_rank: u32,        // Expected value: 3
-            in_stride: [u32; 4], // Strides for [B, Cin, Lin, 1]
+            in_stride: [u32; 4],  // Strides for [B, Cin, Lin, 1]
             ker_stride: [u32; 4], // Strides for [Cout, Cin, Ksize, 1]
 
             // Dimensions & Convolution Parameters
@@ -2459,92 +2461,201 @@ impl VulkanStorage {
     pub fn gemm_impl(
         &self,
         rhs: &Self,
-        dst: &Self,
-        layout: &Layout,
-        rhs_layout: &Layout,
+        dst: &Self,      // Output tensor (assumed contiguous NCHW-like [Batch..., M, N])
+        layout: &Layout, // Layout for A [Batch..., M, K]
+        rhs_layout: &Layout, // Layout for B [Batch..., K, N]
         pipeline: &Arc<ComputePipeline>,
-        (b, m, n, k): (usize, usize, usize, usize),
+        // M, N, K dimensions identified by the caller (e.g., candle-core matmul)
+        // b_dims: &[usize], // List of batch dimension sizes (product is total batches) - OR pass total_batches
+        // m_dim_idx, k_dim_idx_a, k_dim_idx_b, n_dim_idx // Indices of M, K, N dims? Less common.
+        // Let's stick to the M,N,K values and calculate batching based on rank.
+        (_b_total_usize, m_usize, n_usize, k_usize): (usize, usize, usize, usize),
     ) -> Result<()> {
-        // Build a push constant struct for GEMM.
+        // Assumes return type Result<(), crate::Error>
+        let a_rank = layout.shape().rank();
+        let b_rank = rhs_layout.shape().rank();
+
+        // --- Validate Ranks (MatMul requires at least Rank 2) ---
+        if a_rank < 2 || b_rank < 2 {
+            Err(VulkanError::Message(format!(
+                "GEMM requires input ranks >= 2 (got A: {}, B: {})",
+                a_rank, b_rank
+            )))?;
+        }
+
+        // --- Identify M, K (A) and K, N (B) dimension indices ---
+        // Standard convention: last two dimensions are matrix dims
+        let a_m_dim_idx = a_rank - 2;
+        let a_k_dim_idx = a_rank - 1;
+        let b_k_dim_idx = b_rank - 2;
+        let b_n_dim_idx = b_rank - 1;
+
+        // --- Validate Shapes ---
+        let a_dims = layout.shape().dims();
+        let b_dims = rhs_layout.shape().dims();
+        if a_dims[a_k_dim_idx] != b_dims[b_k_dim_idx] {
+            // Check K dimension match
+            Err(VulkanError::Message(format!(
+                "GEMM K dimension mismatch: A ({}) != B ({})",
+                a_dims[a_k_dim_idx], b_dims[b_k_dim_idx]
+            )))?;
+        }
+        // Check batch dimensions match (ignoring M,K,N)
+        let num_batch_dims = a_rank - 2;
+        if num_batch_dims != b_rank - 2 {
+            // Ranks differ in batch part, check if one can broadcast to the other?
+            // For simple GEMM, usually require same batch shape.
+            Err(VulkanError::Message("GEMM batch rank mismatch".into()))?;
+        }
+        for i in 0..num_batch_dims {
+            if a_dims[i] != b_dims[i] {
+                Err(VulkanError::Message(format!(
+                    "GEMM batch dimension {} mismatch: A ({}) != B ({})",
+                    i, a_dims[i], b_dims[i]
+                )))?;
+            }
+        }
+
+        // Verify passed M, N, K match layout (use usize versions first)
+        if a_dims[a_m_dim_idx] != m_usize
+            || a_dims[a_k_dim_idx] != k_usize
+            || b_dims[b_n_dim_idx] != n_usize
+        {
+            Err(VulkanError::Message(format!(
+                "GEMM M,N,K parameters ({},{},{}) do not match tensor shapes A{:?}, B{:?}",
+                m_usize, n_usize, k_usize, a_dims, b_dims
+            )))?;
+        }
+
+        // Calculate total number of batches
+        let total_batches: usize = a_dims[0..num_batch_dims].iter().product();
+        // Sanity check parameter _b_total_usize?
+        // if total_batches != _b_total_usize { /* Error */ }
+
+        // --- Push Constant Struct ---
         #[repr(C)]
-        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
         struct GemmPushConstants {
             m: u32,
             n: u32,
             k: u32,
-            a_batch_stride: u32, // physical batch stride for A
-            a_row_stride: u32,   // physical row stride for A
-            a_col_stride: u32,   // physical column stride for A
-            b_batch_stride: u32, // physical batch stride for B
-            b_row_stride: u32,   // physical row stride for B
-            b_col_stride: u32,   // physical column stride for B
+            // Strides identified by *meaning* for the batched GEMM operation
+            a_batch_stride: u32, // Stride between logical batches in A's buffer
+            a_m_stride: u32,     // Stride for M dimension in A
+            a_k_stride: u32,     // Stride for K dimension in A
+            b_batch_stride: u32, // Stride between logical batches in B's buffer
+            b_k_stride: u32,     // Stride for K dimension in B
+            b_n_stride: u32,     // Stride for N dimension in B
+            // Base offsets
             a_base: u32,
             b_base: u32,
-            ldc: u32,
+            // Output layout (assume contiguous [total_batches, M, N])
+            ldc: u32,            // Leading dimension C (usually N)
+            c_batch_stride: u32, // Stride between batches C (usually M*N)
+            // Scalars
             alpha: f32,
             beta: f32,
+            // Add padding if needed for alignment
         }
+
+        // --- Determine Strides for Batched GEMM View ---
+        let a_strides = layout.stride();
+        let b_strides = rhs_layout.stride();
+
+        // Strides for the core matrix dimensions (M, K for A; K, N for B)
+        let a_m_stride = a_strides[a_m_dim_idx] as u32;
+        let a_k_stride = a_strides[a_k_dim_idx] as u32;
+        let b_k_stride = b_strides[b_k_dim_idx] as u32;
+        let b_n_stride = b_strides[b_n_dim_idx] as u32;
+
+        // Calculate stride between logical batches.
+        // This is the stride of the slowest-moving batch dimension.
+        // If num_batch_dims > 0, it's stride[num_batch_dims - 1].
+        // If num_batch_dims == 0 (rank 2 input), the concept of batch stride is 0 or irrelevant.
+        // The shader uses 'batch * stride', so a stride of 0 works mathematically if total_batches is 1.
+        let a_batch_stride = if num_batch_dims > 0 {
+            a_strides[num_batch_dims - 1] as u32
+        } else {
+            0
+        };
+        let b_batch_stride = if num_batch_dims > 0 {
+            b_strides[num_batch_dims - 1] as u32
+        } else {
+            0
+        };
+        // Note: This assumes the flattened 'batch' index in the shader (0..total_batches-1)
+        // maps correctly using the stride of the dimension *just before* M/K.
+        // This might need adjustment if batch dimensions themselves are not contiguous.
+
+        // Base offsets
+        let a_base = layout.start_offset() as u32;
+        let b_base = rhs_layout.start_offset() as u32;
+
+        // Output layout strides (assuming contiguous dst = [total_batches, M, N])
+        let m_u32 = m_usize as u32;
+        let n_u32 = n_usize as u32;
+        let k_u32 = k_usize as u32; // Cast M, N, K once
+        let ldc = n_u32; // Stride between rows (M dim) is N elements
+        let c_batch_stride = m_u32 * ldc; // Stride between batches is M*N elements
 
         if let (Some(lhs_buffer), Some(rhs_buffer)) =
             ((*self.buffer).clone(), (*rhs.buffer).clone())
         {
-            let (b, m, n, k) = (b as u32, m as u32, n as u32, k as u32);
-            // Extract physical strides from the Layouts.
-            // For A: assume shape is [b, m, k] so:
-            //   a_batch_stride = lhs_l.stride()[0]
-            //   a_row_stride   = lhs_l.stride()[lhs_l.shape().rank() - 2]
-            //   a_col_stride   = lhs_l.stride()[lhs_l.shape().rank() - 1]
-            let a_rank = layout.shape().rank();
-            let a_batch_stride = layout.stride()[0] as u32;
-            let a_row_stride = layout.stride()[a_rank - 2] as u32;
-            let a_col_stride = layout.stride()[a_rank - 1] as u32;
-            let a_base = layout.start_offset() as u32;
+            // Get dst buffer safely
+            let dst_buffer = (*dst.buffer)
+                .clone()
+                .ok_or_else(|| VulkanError::Message("Destination buffer is missing".into()))?; // Convert error
 
-            // Similarly for B: assume shape is [b, k, n]:
-            let b_rank = rhs_layout.shape().rank();
-            let b_batch_stride = rhs_layout.stride()[0] as u32;
-            let b_row_stride = rhs_layout.stride()[b_rank - 2] as u32;
-            let b_col_stride = rhs_layout.stride()[b_rank - 1] as u32;
-            let b_base = rhs_layout.start_offset() as u32;
-
-            // For C, assume it’s allocated contiguously with shape [b, m, n],
-            // so the logical row stride is n, and batch stride would be m * n.
-            let ldc = n; // each row of C has n elements
-
-            // Build the push constants.
+            // Build the push constants
             let push_constants = GemmPushConstants {
-                m,
-                n,
-                k,
+                m: m_u32,
+                n: n_u32,
+                k: k_u32,
                 a_batch_stride,
-                a_row_stride,
-                a_col_stride,
+                a_m_stride,
+                a_k_stride,
                 b_batch_stride,
-                b_row_stride,
-                b_col_stride,
+                b_k_stride,
+                b_n_stride,
                 a_base,
                 b_base,
                 ldc,
-                alpha: 1f32,
-                beta: 0f32,
+                c_batch_stride,
+                alpha: 1f32, // Or allow passing alpha/beta
+                beta: 0f32,  // Assume C is zeroed - if not, need to pass beta=1
             };
 
-            let tile_size = 16u32;
-            let wg_x = (n + tile_size - 1) / tile_size;
-            let wg_y = (m + tile_size - 1) / tile_size;
-            let wg_z = b;
+            // Dispatch dimensions based on total batches, M, N
+            let tile_size = 16u32; // Common tile size
+            let wg_x = (n_u32 + tile_size - 1) / tile_size; // Workgroups along N dimension
+            let wg_y = (m_u32 + tile_size - 1) / tile_size; // Workgroups along M dimension
+            let wg_z = total_batches as u32; // Workgroups for batches
 
+            // Sync inputs (dst sync is often implicit if newly created, but explicit is safer)
             self.pending_future.sync_if_needed()?;
             rhs.pending_future.sync_if_needed()?;
-            dst.pending_future.sync_if_needed()?;
+            dst.pending_future.sync_if_needed()?; // Sync dst if beta != 0 or reuse
+
             dst.execute_compute_kernel(
                 pipeline,
-                vec![lhs_buffer, rhs_buffer],
-                vec![(*dst.buffer).clone().unwrap()],
-                [wg_x, wg_y, wg_z],
-                push_constants,
-                true,
+                vec![lhs_buffer, rhs_buffer], // Input buffers A, B
+                vec![dst_buffer],             // Output buffer C
+                [wg_x, wg_y, wg_z],           // Dispatch grid size
+                push_constants,               // Push constants with calculated strides/offsets
+                true, // direct_dispatch = true (we calculated exact workgroups)
             )?;
+        } else {
+            // Handle cases where input buffers might be None (e.g., zero-sized tensors)
+            if layout.shape().elem_count() == 0 || rhs_layout.shape().elem_count() == 0 {
+                // If either input is empty, output should be zeros (or handle according to GEMM rules)
+                // Potentially fill dst with zeros here if needed.
+                // For now, just succeed silently if an input buffer is None (likely zero elements)
+            } else {
+                // This case (Some() check failed but elem_count > 0) shouldn't happen if alloc works
+                Err(VulkanError::Message(
+                    "Input buffer missing unexpectedly in GEMM".into(),
+                ))?;
+            }
         }
         Ok(())
     }
