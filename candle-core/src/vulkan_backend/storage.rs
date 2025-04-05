@@ -194,7 +194,9 @@ impl VulkanStorage {
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
         let future = command_buffer
             .execute(device.queue.clone())
-            .map_err(VulkanError::CommandBufferExecError)?;
+            .map_err(VulkanError::CommandBufferExecError);
+        if future.is_err() { println!("ERR"); }
+        let future = future?;
         self.pending_future.set_future(Box::new(future))?;
         Ok(())
     }
@@ -257,40 +259,46 @@ impl VulkanStorage {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct PushConstants {
-            base: u32,
             rank: u32,
-            _pad0: [u32; 2],
-            shape: [u32; 4],
-            stride: [u32; 4],
+            base: u32,
+            shape: [u32; MAX_RANK],
+            stride: [u32; MAX_RANK],
         }
 
         if let Some(buffer) = (*self.buffer).clone() {
+            let shape_slice = layout.shape();
+            let rank = shape_slice.rank();
+            if rank > MAX_RANK {
+                return Err(VulkanError::Message(format!(
+                    "Vulkan backend only supports rank up to {}, got {}",
+                    MAX_RANK, rank
+                ))
+                    .into());
+            }
+
             let elem_count = layout.shape().elem_count();
             let device = self.device();
             let new_storage = unsafe { device.alloc_uninit(layout.shape(), target_dtype)? };
 
-            // Extract the full shape and stride. We assume a maximum rank of 4.
-            let shape_slice = layout.shape();
+            // Extract the full shape and stride. We assume a maximum rank of MAX_RANK.
             let stride_slice = layout.stride();
-            let mut shape_arr = [1u32; 4];
-            let mut stride_arr = [1u32; 4];
-            for i in 0..shape_slice.rank().min(4) {
+            let mut shape_arr = [1u32; MAX_RANK];
+            let mut stride_arr = [1u32; MAX_RANK];
+            for i in 0..rank.min(MAX_RANK) {
                 shape_arr[i] = shape_slice
                     .dim(i)
                     .unwrap()
                     .try_into()
                     .map_err(|_| VulkanError::Message("Shape conversion failed".to_string()))?;
             }
-            for i in 0..stride_slice.len().min(4) {
+            for i in 0..stride_slice.len().min(MAX_RANK) {
                 stride_arr[i] = (*stride_slice.get(i).unwrap()) as u32;
             }
-            let rank = shape_slice.rank() as u32;
             let base = layout.start_offset() as u32;
 
             let push_constants = PushConstants {
+                rank: rank as u32,
                 base,
-                rank,
-                _pad0: [0; 2],
                 shape: shape_arr,
                 stride: stride_arr,
             };
@@ -354,7 +362,7 @@ impl VulkanStorage {
             let a_stride_slice = layout.stride();
             let mut a_shape_arr = [1u32; MAX_RANK];
             let mut a_stride_arr = [1u32; MAX_RANK];
-            for i in 0..a_shape_slice.rank().min(MAX_RANK) {
+            for i in 0..a_rank.min(MAX_RANK) {
                 a_shape_arr[i] = a_shape_slice
                     .dim(i)
                     .unwrap()
@@ -368,7 +376,7 @@ impl VulkanStorage {
             let b_stride_slice = rhs_layout.stride();
             let mut b_shape_arr = [1u32; MAX_RANK];
             let mut b_stride_arr = [1u32; MAX_RANK];
-            for i in 0..b_shape_slice.rank().min(MAX_RANK) {
+            for i in 0..b_rank.min(MAX_RANK) {
                 b_shape_arr[i] = b_shape_slice
                     .dim(i)
                     .unwrap()
