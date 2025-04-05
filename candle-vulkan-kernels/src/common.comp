@@ -45,5 +45,61 @@ uint global_linear_id() {
         + gid.z * group_size.x * groups_per_plane;
 }
 
+/*
+ * Calculates the physical offset within a buffer for a given flat logical index.
+ * This function converts the flat logical index into multi-dimensional coordinates
+ * based on the tensor's shape, and then uses the physical strides to compute the
+ * final offset relative to the tensor's base address.
+ *
+ * Parameters:
+ *   rank        : The actual rank (number of dimensions) of the tensor.
+ *   base        : The base address of the tensor in memory (usually 0).
+ *   shape       : Array[MAX_RANK] containing the size of each dimension.
+ *                 Values beyond 'rank' are ignored.
+ *   stride      : Array[MAX_RANK] containing the physical stride for each dimension.
+ *                 Values beyond 'rank' are ignored.
+ *   logical_idx : The flat logical index (0 to num_elements-1)
+ *
+ * Returns:
+ *   uint        : The calculated physical offset relative to the tensor's base address.
+ */
+uint get_physical_index(
+    const uint rank,
+    const uint base,
+    const uint shape[MAX_RANK],
+    const uint stride[MAX_RANK],
+    uint logical_idx
+) {
+    // Array to store the calculated multi-dimensional coordinates
+    uint coords[MAX_RANK];
+
+    // Decode the flat logical index into multi-dimensional coordinates
+    // Iterate backwards from the fastest moving dimension (rank-1) to the slowest (0)
+    for (int d = int(rank) - 1; d >= 0; --d) {
+        // Get the size of the current dimension
+        uint dim_size = shape[d];
+
+        // Handle dimension size of 0 or 1 safely
+        if (dim_size <= 1) {
+            // If size is 0 or 1, the coordinate for this dimension is always 0,
+            // and the logical_idx doesn't change relative to slower dimensions.
+            coords[d] = 0;
+        } else {
+            // The coordinate is the remainder when dividing by the dimension size
+            coords[d] = logical_idx % dim_size;
+            // Update the index for the next (slower) dimension
+            logical_idx /= dim_size;
+        }
+    }
+
+    // Calculate the physical offset using the decoded coordinates and physical strides
+    uint physical_offset = base;
+    for (uint d = 0; d < rank; ++d) {
+        physical_offset += coords[d] * stride[d];
+    }
+
+    return physical_offset;
+}
+
 #endif
 
