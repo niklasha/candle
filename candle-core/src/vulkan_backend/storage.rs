@@ -2980,8 +2980,18 @@ impl BackendStorage for VulkanStorage {
         self.affine_elu_op_impl(layout, &pipeline, mul, add, 0.0)
     }
 
-    fn powf(&self, _: &Layout, _: f64) -> Result<Self> {
-        fail!()
+    fn powf(&self, layout: &Layout, exp: f64) -> Result<Self> {
+        let suffix = match self.dtype {
+            DType::F32 => "f32",
+            DType::BF16 => "bf16",
+            _ => todo!("Unsupported dtype {:?}", self.dtype),
+        };
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &format!("powf_{}", suffix), None)
+            .map_err(VulkanError::from)?;
+        self.affine_elu_op_impl(layout, &pipeline, exp, 0.0, 0.0)
     }
 
     fn elu(&self, layout: &Layout, alpha: f64) -> Result<Self> {
