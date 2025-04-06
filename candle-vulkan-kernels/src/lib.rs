@@ -271,7 +271,7 @@ impl Kernels {
 
         // --- UNARY KERNELS ---
         {
-            for op in ["neg", "abs", "sign", "gelu", "gelu_erf", "erf", "relu", "silu", "ceil", "floor", "round", "sqr", "sqrt", "sin", "cos", "tan", "sigmoid", "exp", "log", "recip"] {
+            for op in ["neg", "abs", "sign", "gelu", "gelu_erf", "erf", "relu", "silu", "ceil", "floor", "round", "sqr", "sqrt", "sin", "cos", "tan", "sigmoid", "exp", "log", "recip", "tanh"] {
                 for (dtype, glsl_type, is_bf16) in [("f32", "float", "0"), ("f16", "float16_t", "0"), ("bf16", "uint16_T", "1")] {
                     let (name, config) = register_kernel!(
                         format!("{}_{}", op, dtype),
@@ -544,7 +544,7 @@ impl Kernels {
             configs.insert(name, config);
         }
 
-        // --- AFFINE / ELU KERNELS ---
+        // --- AFFINE / ELU / POWF KERNELS ---
         {
             let (name, config) = register_kernel!("affine_f32", "src/affine_elu.comp",
                 ("OP", "affine_op"),
@@ -562,6 +562,13 @@ impl Kernels {
             configs.insert(name, config);
             let (name, config) = register_kernel!("elu_f32", "src/affine_elu.comp",
                 ("OP", "elu_op"),
+                ("INNER_TYPE", "float"),
+                ("OUTER_TYPE", "float"),
+                ("BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("powf_f32", "src/affine_elu.comp",
+                ("OP", "powf_op"),
                 ("INNER_TYPE", "float"),
                 ("OUTER_TYPE", "float"),
                 ("BF16", "0")
