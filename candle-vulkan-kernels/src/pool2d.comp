@@ -1,0 +1,122 @@
+#version 450
+
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include "common.comp"
+
+#if BF16
+    #define CAST_OUT(x) uint16_t((floatBitsToUint(x)+0x8000u)>>16u)
+    #define CAST_IN(x)  uintBitsToFloat(uint(x)<<16u)
+#else
+    #define CAST_OUT(x) OUTER_TYPE(x)
+    #define CAST_IN(x)  INNER_TYPE(x)
+#endif
+
+layout(push_constant) uniform PushConstants {
+    uint in_base; uint in_rank; uint in_shape[MAX_RANK]; uint in_stride[MAX_RANK];
+    uint out_rank; uint out_shape[MAX_RANK]; uint out_stride[MAX_RANK];
+    uint k_h; uint k_w; uint s_h; uint s_w;
+    uint h_in; uint w_in; uint h_out; uint w_out;
+    uint total_out_elems;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer { OUTER_TYPE input_data[]; };
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer { OUTER_TYPE output_data[]; };
+
+uint get_input_physical_index_from_coords(uint coords[MAX_RANK]) {
+    uint phys_idx = pc.in_base;
+    for (uint i = 0; i < pc.in_rank; ++i) { phys_idx += coords[i] * pc.in_stride[i]; }
+    return phys_idx;
+}
+
+uint get_output_physical_index_from_coords(uint coords[MAX_RANK]) {
+    uint phys_idx = 0;
+    for (uint i = 0; i < pc.out_rank; ++i) { phys_idx += coords[i] * pc.out_stride[i]; }
+    return phys_idx;
+}
+
+void main() {
+    uint gid = global_linear_id();
+    if (gid >= pc.total_out_elems) return;
+
+    // Decode gid into NCHW-like output coordinates using MAX_RANK arrays
+    uint coords[MAX_RANK];
+    uint temp_logical_idx = gid;
+    // Iterate backwards using output rank and OUTPUT SHAPE for decoding
+    for (int i = int(pc.out_rank) - 1; i >= 0; --i) {
+        uint dim_size = (i < MAX_RANK) ? pc.out_shape[i] : 1; // Use output shape dim size
+        if (dim_size <= 1) {
+            coords[i] = 0;
+        } else {
+            coords[i] = temp_logical_idx % dim_size; // Correct: Use dim_size
+            temp_logical_idx /= dim_size; // Correct: Use dim_size
+        }
+    }
+    // Extract oh, ow assuming rank >= 2
+    uint oh = (pc.out_rank >= 2) ? coords[pc.out_rank - 2] : 0;
+    uint ow = (pc.out_rank >= 1) ? coords[pc.out_rank - 1] : 0;
+
+    uint h_start = oh * pc.s_h;
+    uint w_start = ow * pc.s_w;
+    uint h_end = h_start + pc.k_h;
+    uint w_end = w_start + pc.k_w;
+
+    INNER_TYPE accum;
+#if AVG
+    uint count = 0;
+#else
+    bool value_set = false;
+#endif
+
+    uint current_coords[MAX_RANK];
+    for (uint i = 0; i < pc.out_rank; ++i) { current_coords[i] = coords[i]; } // Copy batch/channel coords
+
+    for (uint kh = h_start; kh < h_end; ++kh) {
+        if (kh >= pc.h_in) continue; // Check input H bounds
+        current_coords[pc.out_rank - 2] = kh; // Set current H coord
+
+        for (uint kw = w_start; kw < w_end; ++kw) {
+            if (kw >= pc.w_in) continue; // Check input W bounds
+            current_coords[pc.out_rank - 1] = kw; // Set current W coord
+
+            uint input_phys_idx = get_input_physical_index_from_coords(current_coords);
+            INNER_TYPE val = CAST_IN(input_data[input_phys_idx]);
+#if AVG
+            accum += val;
+            count++;
+#else // MAX
+            if (!value_set) {
+                accum = val;
+                value_set = true;
+            } else {
+                accum = max(accum, val);
+            }
+#endif
+        }
+    }
+
+    OUTER_TYPE result;
+#if AVG
+    if (count == 0) {
+        // Handle case where pooling window was entirely outside input bounds
+        result = OUTER_TYPE(1); // Or some other default? Output 1 for empty pool.
+    } else {
+        // Cast final average value (in ACCUM_TYPE) to output type
+        result = CAST_OUT(accum / INNER_TYPE(count));
+    }
+#else // MAX
+    if (!value_set) {
+        // Handle case where pooling window was entirely outside input bounds
+        result = OUTER_TYPE(0); // Or some other default? Output 0 for empty pool.
+    } else {
+        // Cast final max value (already in ACCUM_TYPE) to output type
+        result = CAST_OUT(accum);
+    }
+#endif
+
+    // Write result (gid is the correct flat output index)
+    output_data[gid] = result;
+}

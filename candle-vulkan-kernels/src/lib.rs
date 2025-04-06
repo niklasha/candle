@@ -271,7 +271,7 @@ impl Kernels {
 
         // --- UNARY KERNELS ---
         {
-            for op in ["neg", "abs", "sign", "gelu", "gelu_erf", "erf", "silu", "ceil", "floor", "round", "sqr", "sqrt", "sin", "cos", "tan", "sigmoid", "exp", "log", "recip"] {
+            for op in ["neg", "abs", "sign", "gelu", "gelu_erf", "erf", "relu", "silu", "ceil", "floor", "round", "sqr", "sqrt", "sin", "cos", "tan", "sigmoid", "exp", "log", "recip"] {
                 for (dtype, glsl_type, is_bf16) in [("f32", "float", "0"), ("f16", "float16_t", "0"), ("bf16", "uint16_T", "1")] {
                     let (name, config) = register_kernel!(
                         format!("{}_{}", op, dtype),
@@ -1136,6 +1136,35 @@ impl Kernels {
                 );
                 configs.insert(name, config);
                 // Add BF16, F16 variants if needed...
+            }
+
+            // --- POOL2D KERNELS ---
+            {
+                // Define supported types and their properties for pooling
+                for (op, is_avg) in [("avg", "1"), ("max", "0")] {
+                    // Format: (candle_dtype_suffix, glsl_inner_type, glsl_outer_type, glsl_accum_type, is_bf16)
+                    // Note: ACCUM_TYPE is often float for avg pooling f16/bf16 for precision.
+                    //       For max pooling, ACCUM_TYPE can match INNER_TYPE unless conversion needed.
+                    let types = [
+                        ("f32", "float", "float", "0",),
+                        ("f16", "float16_t", "float", "0"),
+                        ("bf16", "uint16_t", "float", "1"),
+                    ];
+
+                    for (dtype_suffix, inner_type, outer_type, is_bf16) in types {
+                        // Average Pool Variant
+                        let name = format!("pool2d_{}_{}", op, dtype_suffix);
+                        let (name, avg_config) = register_kernel!(
+                            &name,
+                            "src/pool2d.comp",
+                            ("AVG", is_avg),
+                            ("INNER_TYPE", inner_type),
+                            ("OUTER_TYPE", outer_type),
+                            ("BF16", is_bf16)
+                        );
+                        configs.insert(name.to_owned(), avg_config);
+                    }
+                }
             }
 
             // --- UPSAMPLE_NEAREST1D KERNELS ---
