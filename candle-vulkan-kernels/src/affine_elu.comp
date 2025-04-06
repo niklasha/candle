@@ -70,6 +70,16 @@ uint get_strided_index(uint lin_idx) {
 
 void affine_op() {
     uint lin_idx = global_linear_id();
+    uint total_elems = 1;
+    for (uint i = 0; i < pc.rank; ++i) {
+        // Handle dim size 0 safely - if any dim is 0, total elems is 0
+        if (pc.shape[i] == 0) {
+            total_elems = 0;
+            break;
+        }
+        total_elems *= pc.shape[i];
+    }
+    if (lin_idx >= total_elems) return;
     uint data_index = get_strided_index(lin_idx);
     float x = CAST_IN(input_data[data_index]);
     output_data[lin_idx] = CAST_OUT(x * pc.mul + pc.add);
@@ -77,6 +87,16 @@ void affine_op() {
 
 void elu_op() {
     uint lin_idx = global_linear_id();
+    uint total_elems = 1;
+    for (uint i = 0; i < pc.rank; ++i) {
+        // Handle dim size 0 safely - if any dim is 0, total elems is 0
+        if (pc.shape[i] == 0) {
+            total_elems = 0;
+            break;
+        }
+        total_elems *= pc.shape[i];
+    }
+    if (lin_idx >= total_elems) return;
     uint data_index = get_strided_index(lin_idx);
     float x = CAST_IN(input_data[data_index]);
     output_data[lin_idx] = CAST_OUT((x >= 0.0) ? x : pc.alpha * (exp(x) - 1.0));
