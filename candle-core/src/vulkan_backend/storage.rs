@@ -101,6 +101,9 @@ pub struct VulkanStorage {
 }
 
 impl VulkanStorage {
+    // Define MAX_RANK constant, consistent with common.comp and other ops
+    const MAX_RANK: usize = 8;
+
     pub(crate) fn new(
         buffer: Option<Subbuffer<[u8]>>,
         device: VulkanDevice,
@@ -1869,6 +1872,192 @@ impl VulkanStorage {
         Ok(new_storage)
     }
 
+    fn pool2d_op_impl(
+        &self,
+        layout: &Layout,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<Self> {
+        // Assumes crate::Error return
+        let (k_h, k_w) = kernel_size;
+        let (s_h, s_w) = stride;
+        // --- Input Validation & Shape Calculation ---
+        let in_shape = layout.shape();
+        let in_dims = in_shape.dims();
+        let rank = in_shape.rank();
+
+        // Validate Rank (Require at least 4 dims for H and W)
+        if rank < 2 {
+            // Technically needs only H, W, so rank >= 2
+            Err(VulkanError::Message(
+                "Vulkan Pool2D requires at least 2 dimensions".into(),
+            ))?;
+        }
+        if rank > MAX_RANK {
+            Err(VulkanError::Message(format!(
+                "Vulkan Pool2D only supports rank up to {}, got {}",
+                MAX_RANK, rank
+            )))?;
+        }
+        // Ensure kernel and stride are not zero
+        if k_h == 0 || k_w == 0 {
+            Err(VulkanError::Message(
+                "pooling kernel size cannot be zero".into(),
+            ))?;
+        }
+        if s_h == 0 || s_w == 0 {
+            Err(VulkanError::Message("pooling stride cannot be zero".into()))?;
+        }
+
+        // Identify Height and Width dimensions (last two)
+        let h_dim_idx = rank - 2;
+        let w_dim_idx = rank - 1;
+        let h_in = in_dims[h_dim_idx];
+        let w_in = in_dims[w_dim_idx];
+
+        // Calculate output dimensions (no padding support assumed)
+        // Formula: floor((Input - Kernel) / Stride) + 1
+        let h_out = if h_in >= k_h {
+            (h_in - k_h) / s_h + 1
+        } else {
+            0
+        };
+        let w_out = if w_in >= k_w {
+            (w_in - k_w) / s_w + 1
+        } else {
+            0
+        };
+
+        // Construct output shape, keeping batch/channel/other leading dims
+        let mut out_dims_vec: Vec<usize> = in_dims[..h_dim_idx].to_vec(); // Copy leading dimensions
+        out_dims_vec.push(h_out);
+        out_dims_vec.push(w_out);
+        let out_shape: Shape = out_dims_vec.into();
+
+        // Handle potentially empty output gracefully (e.g., return tensor of correct shape but 0 elements)
+        // The shader's bounds check will handle this, but allocation might fail?
+        if h_out == 0 || w_out == 0 {
+            println!(
+                "Warning: Pool2D output dimension is zero (H={} W={}). Returning empty tensor.",
+                h_out, w_out
+            );
+            // Return empty tensor matching output shape and dtype
+            return self.device().zeros_impl(&out_shape, self.dtype());
+        }
+
+        // --- Push Constant Struct Definition ---
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+        struct Pool2DPushConstants {
+            // Input Layout
+            in_base: u32,
+            in_rank: u32,               // Actual rank of the input tensor
+            in_shape: [u32; MAX_RANK],  // Input shape padded with 1s
+            in_stride: [u32; MAX_RANK], // Input strides padded with 1s
+
+            // Output Layout (Contiguous NCHW-like based on rank)
+            out_rank: u32,               // Same as input rank
+            out_shape: [u32; MAX_RANK],  // Output shape padded with 1s
+            out_stride: [u32; MAX_RANK], // Contiguous strides for output padded with 1s
+
+            // Pooling Parameters
+            k_h: u32,
+            k_w: u32, // Kernel size H, W
+            s_h: u32,
+            s_w: u32, // Stride H, W
+            // No padding param for now, assuming padding=0
+
+            // Dimensions (for convenience in shader)
+            h_in: u32,
+            w_in: u32, // Input H, W size (from in_shape)
+            h_out: u32,
+            w_out: u32, // Output H, W size (from out_shape)
+
+            // Total output elements for bounds check
+            total_out_elems: u32,
+            // Add padding if needed for struct alignment based on MAX_RANK
+            // e.g., if MAX_RANK=8, size is large, might need padding to multiple of 16.
+        }
+
+        // --- Allocate Output ---
+        let device = self.device();
+        let new_storage = unsafe { device.alloc_uninit(&out_shape, self.dtype())? };
+        let output_buffer = (*new_storage.buffer)
+            .clone()
+            .ok_or_else(|| VulkanError::Message("Output buffer allocation failed".into()))?; // Convert error
+
+        // --- Extract Input Layout ---
+        let in_stride_slice = layout.stride();
+        let mut in_shape_arr = [1u32; MAX_RANK];
+        let mut in_stride_arr = [1u32; MAX_RANK];
+        for i in 0..rank {
+            in_shape_arr[i] = in_dims[i] as u32;
+            in_stride_arr[i] = in_stride_slice[i] as u32;
+        }
+        let in_base = layout.start_offset() as u32;
+
+        // --- Calculate Contiguous Output Strides ---
+        let out_dims = out_shape.dims(); // Use calculated output dimensions
+        let mut out_shape_arr = [1u32; MAX_RANK];
+        let mut out_stride_arr = [1u32; MAX_RANK];
+        let mut current_out_stride = 1u32;
+        for i in (0..rank).rev() {
+            // Use input rank for output layout too
+            let dim_size = out_dims[i] as u32;
+            out_shape_arr[i] = dim_size;
+            out_stride_arr[i] = current_out_stride;
+            // Handle dimension size 0 correctly during stride calculation
+            if dim_size > 0 {
+                current_out_stride = current_out_stride.saturating_mul(dim_size);
+            } else {
+                // If dim size is 0, subsequent strides become effectively infinite/irrelevant
+                // but setting stride to 1 is safer than 0 for the array.
+                current_out_stride = 1; // Or keep previous value? Needs care.
+            }
+        }
+
+        // --- Populate Push Constants ---
+        let total_out_elems = out_shape.elem_count() as u32;
+        let push_constants = Pool2DPushConstants {
+            in_base,
+            in_rank: rank as u32,
+            in_shape: in_shape_arr,
+            in_stride: in_stride_arr,
+
+            out_rank: rank as u32, // Output rank is same
+            out_shape: out_shape_arr,
+            out_stride: out_stride_arr,
+
+            k_h: k_h as u32,
+            k_w: k_w as u32,
+            s_h: s_h as u32,
+            s_w: s_w as u32,
+
+            h_in: h_in as u32,
+            w_in: w_in as u32,
+            h_out: h_out as u32,
+            w_out: w_out as u32,
+
+            total_out_elems,
+        };
+
+        // --- Synchronization and Dispatch ---
+        self.pending_future.sync_if_needed()?;
+
+        // Execute kernel
+        new_storage.execute_compute_kernel(
+            pipeline,
+            vec![(*self.buffer).clone().unwrap()], // Input buffer
+            vec![output_buffer],                   // Output buffer
+            [total_out_elems, 1, 1],               // Dispatch one thread per output element
+            push_constants,
+            false, // Let helper calculate workgroups based on total_out_elems
+        )?;
+
+        Ok(new_storage)
+    }
+
     fn upsample_nearest1d_op_impl(
         &self,
         layout: &Layout,
@@ -3099,12 +3288,46 @@ impl BackendStorage for VulkanStorage {
         self.conv_transpose2d_op_impl(kernel, layout, kernel_layout, params, &pipeline)
     }
 
-    fn avg_pool2d(&self, _: &Layout, _: (usize, usize), _: (usize, usize)) -> Result<Self> {
-        fail!()
+    fn avg_pool2d(
+        &self,
+        layout: &Layout,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+    ) -> Result<Self> {
+        let suffix = match self.dtype() {
+            DType::F32 => "f32",
+            DType::F16 => "f16",
+            DType::BF16 => "bf16",
+            _ => crate::bail!("Vulkan avg_pool2d unsupported dtype {:?}", self.dtype()),
+        };
+        let key = format!("pool2d_avg_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key, None) // Pass define
+            .map_err(VulkanError::from)?;
+        self.pool2d_op_impl(layout, kernel_size, stride, &pipeline)
     }
 
-    fn max_pool2d(&self, _: &Layout, _: (usize, usize), _: (usize, usize)) -> Result<Self> {
-        fail!()
+    fn max_pool2d(
+        &self,
+        layout: &Layout,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+    ) -> Result<Self> {
+        let suffix = match self.dtype() {
+            DType::F32 => "f32",
+            DType::F16 => "f16",
+            DType::BF16 => "bf16",
+            _ => crate::bail!("Vulkan max_pool2d unsupported dtype {:?}", self.dtype()),
+        };
+        let key = format!("pool2d_max_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key, None) // Pass define
+            .map_err(VulkanError::from)?;
+        self.pool2d_op_impl(layout, kernel_size, stride, &pipeline)
     }
 
     fn upsample_nearest1d(&self, layout: &Layout, scale_l: usize) -> Result<Self> {

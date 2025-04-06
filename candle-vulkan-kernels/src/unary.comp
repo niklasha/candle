@@ -28,6 +28,7 @@ layout(push_constant) uniform PushConstants {
     uint stride[MAX_RANK];
 } pc;
 
+const INNER_TYPE ZERO = INNER_TYPE(0.0);
 const INNER_TYPE HALF = INNER_TYPE(0.5);
 const INNER_TYPE ONE = INNER_TYPE(1.0);
 
@@ -77,6 +78,15 @@ void gelu_erf_op(uint idx, uint a_idx) {
 void erf_op(uint idx, uint a_idx) {
     INNER_TYPE x = CAST_IN(input_data[a_idx]);
     output_data[idx] = CAST_OUT(erf_approx(x));
+}
+
+void relu_op(uint idx, uint a_idx) {
+    INNER_TYPE x = CAST_IN(input_data[a_idx]);
+    if (x < ZERO) {
+        output_data[idx] = CAST_OUT(ZERO);
+    } else {
+        output_data[idx] = input_data[a_idx];
+    }
 }
 
 void silu_op(uint idx, uint a_idx) {
