@@ -1,6 +1,6 @@
 [package]
 name = "candle-vulkan-kernels"
-version = "0.8.4"
+version = "0.9.0-alpha.1"
 edition = "2021"
 
 description = "Vulkan kernels for Candle"
