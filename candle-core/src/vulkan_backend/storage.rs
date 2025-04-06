@@ -2036,7 +2036,6 @@ impl VulkanStorage {
             w_in: w_in as u32,
             total_out_elems,
         };
-        println!("pc {:?}", push_constants);
         // --- Synchronization and Dispatch ---
         self.pending_future.sync_if_needed()?;
 
