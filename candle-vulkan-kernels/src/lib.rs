@@ -267,12 +267,20 @@ impl Kernels {
                 ("DST_BF16", "0")
             );
             configs.insert(name, config);
+            let (name, config) = register_kernel!("cast_i64_u32", "src/cast.comp",
+                ("SRC_TYPE", "int64_t"),
+                ("DST_TYPE", "uint"),
+                ("NEED_UINT_CAST", "0"),
+                ("SRC_BF16", "0"),
+                ("DST_BF16", "0")
+            );
+            configs.insert(name, config);
         }
 
         // --- UNARY KERNELS ---
         {
             for op in ["neg", "abs", "sign", "gelu", "gelu_erf", "erf", "relu", "silu", "ceil", "floor", "round", "sqr", "sqrt", "sin", "cos", "tan", "sigmoid", "exp", "log", "recip", "tanh"] {
-                for (dtype, glsl_type, is_bf16) in [("f32", "float", "0"), ("f16", "float16_t", "0"), ("bf16", "uint16_T", "1")] {
+                for (dtype, glsl_type, is_bf16) in [("f32", "float", "0"), ("f16", "float16_t", "0"), ("bf16", "uint16_t", "1")] {
                     let (name, config) = register_kernel!(
                         format!("{}_{}", op, dtype),
                         "src/unary.comp",
@@ -288,292 +296,64 @@ impl Kernels {
 
         // --- BINARY KERNELS ---
         {
-            let (name, config) = register_kernel!("add_f32", "src/binary.comp",
-                ("OP", "add_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("sub_f32", "src/binary.comp",
-                ("OP", "sub_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("div_f32", "src/binary.comp",
-                ("OP", "div_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("mul_f32", "src/binary.comp",
-                ("OP", "mul_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("minimum_f32", "src/binary.comp",
-                ("OP", "min_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("maximum_f32", "src/binary.comp",
-                ("OP", "max_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("add_bf16", "src/binary.comp",
-                ("OP", "add_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "uint16_t"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("sub_bf16", "src/binary.comp",
-                ("OP", "sub_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "uint16_t"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("div_bf16", "src/binary.comp",
-                ("OP", "div_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "uint16_t"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("mul_bf16", "src/binary.comp",
-                ("OP", "mul_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "uint16_t"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("minimum_bf16", "src/binary.comp",
-                ("OP", "min_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "uint16_t"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("maximum_bf16", "src/binary.comp",
-                ("OP", "max_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "uint16_t"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("add_f16", "src/binary.comp",
-                ("OP", "add_op"),
-                ("INNER_TYPE", "float16_t"),
-                ("OUTER_TYPE", "float16_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("sub_f16", "src/binary.comp",
-                ("OP", "sub_op"),
-                ("INNER_TYPE", "float16_t"),
-                ("OUTER_TYPE", "float16_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("div_f16", "src/binary.comp",
-                ("OP", "div_op"),
-                ("INNER_TYPE", "float16_t"),
-                ("OUTER_TYPE", "float16_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("mul_f16", "src/binary.comp",
-                ("OP", "mul_op"),
-                ("INNER_TYPE", "float16_t"),
-                ("OUTER_TYPE", "float16_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("minimum_f16", "src/binary.comp",
-                ("OP", "min_op"),
-                ("INNER_TYPE", "float16_t"),
-                ("OUTER_TYPE", "float16_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("maximum_f16", "src/binary.comp",
-                ("OP", "max_op"),
-                ("INNER_TYPE", "float16_t"),
-                ("OUTER_TYPE", "float16_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
+            for op in ["add", "sub", "div", "mul", "minimum", "maximum"] {
+                for (dtype, inner_type, outer_type, is_bf16) in [("f32", "float", "float", "0"), ("f16", "float16_t", "float16_t", "0"), ("bf16", "float", "uint16_t", "1"), ("i64", "int64_t", "int64_t", "0")] {
+                    let (name, config) = register_kernel!(format!("{}_{}", op, dtype), "src/binary.comp",
+                        ("OP", format!("{}_op", op)),
+                        ("INNER_TYPE", inner_type),
+                        ("OUTER_TYPE", outer_type),
+                        ("BF16", is_bf16)
+                    );
+                    configs.insert(name, config);
+                }
+            }
         }
 
         // --- REDUCE_PARTIAL KERNELS ---
         {
-            let (name, config) = register_kernel!("sum_partial_f32", "src/reduce_partial.comp",
-                ("OP", "0"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("argmax_partial_f32", "src/reduce_partial.comp",
-                ("OP", "1"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("max_partial_f32", "src/reduce_partial.comp",
-                ("OP", "1"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("argmin_partial_f32", "src/reduce_partial.comp",
-                ("OP", "2"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("min_partial_f32", "src/reduce_partial.comp",
-                ("OP", "2"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("sum_partial_u32", "src/reduce_partial.comp",
-                ("OP", "0"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("argmax_partial_u32", "src/reduce_partial.comp",
-                ("OP", "1"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("max_partial_u32", "src/reduce_partial.comp",
-                ("OP", "1"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("argmin_partial_u32", "src/reduce_partial.comp",
-                ("OP", "2"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("min_partial_u32", "src/reduce_partial.comp",
-                ("OP", "2"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
+            for (op_name, op, to_index) in [("sum", "0", "0"), ("argmax", "1", "1"), ("max", "1", "0"), ("argmin", "2", "1"), ("min", "2", "0")] {
+                for (dtype, inner_type, outer_type, is_bf16) in [("f32", "float", "float", "0"), ("u32", "uint", "uint", "0"), ("f16", "float16_t", "float16_t", "0"), /*("bf16", "float", "uint16_t", "1"),*/ ("i64", "int64_t", "int64_t", "0")] {
+                    let (name, config) = register_kernel!(
+                        format!("{}_partial_{}", op_name, dtype),
+                        "src/reduce_partial.comp",
+                        ("OP", op),
+                        ("TYPE", outer_type),
+                        ("TO_INDEX", to_index));
+                    configs.insert(name, config);
+                }
+            }
         }
 
         // --- REDUCE_COMBINE KERNELS ---
         {
-            let (name, config) = register_kernel!("sum_combine_f32", "src/reduce_combine.comp",
-                ("OP", "0"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("argmax_combine_f32", "src/reduce_combine.comp",
-                ("OP", "1"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("max_combine_f32", "src/reduce_combine.comp",
-                ("OP", "1"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("argmin_combine_f32", "src/reduce_combine.comp",
-                ("OP", "2"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("min_combine_f32", "src/reduce_combine.comp",
-                ("OP", "2"),
-                ("TYPE", "float"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("sum_combine_u32", "src/reduce_combine.comp",
-                ("OP", "0"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("argmax_combine_u32", "src/reduce_combine.comp",
-                ("OP", "1"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("max_combine_u32", "src/reduce_combine.comp",
-                ("OP", "1"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("argmin_combine_u32", "src/reduce_combine.comp",
-                ("OP", "2"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("min_combine_u32", "src/reduce_combine.comp",
-                ("OP", "2"),
-                ("TYPE", "uint"),
-                ("TO_INDEX", "0")
-            );
-            configs.insert(name, config);
+            for (op_name, op, to_index) in [("sum", "0", "0"), ("argmax", "1", "1"), ("max", "1", "0"), ("argmin", "2", "1"), ("min", "2", "0")] {
+                for (dtype, inner_type, outer_type, is_bf16) in [("f32", "float", "float", "0"), ("u32", "uint", "uint", "0"), ("f16", "float16_t", "float16_t", "0"), /*("bf16", "float", "uint16_t", "1"),*/ ("i64", "int64_t", "int64_t", "0")] {
+                    let (name, config) = register_kernel!(
+                        format!("{}_combine_{}", op_name, dtype),
+                        "src/reduce_combine.comp",
+                        ("OP", op),
+                        ("TYPE", outer_type),
+                        ("TO_INDEX", to_index));
+                    configs.insert(name, config);
+                }
+            }
         }
 
         // --- AFFINE / ELU / POWF KERNELS ---
         {
-            let (name, config) = register_kernel!("affine_f32", "src/affine_elu.comp",
-                ("OP", "affine_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("affine_bf16", "src/affine_elu.comp",
-                ("OP", "affine_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "uint16_t"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("elu_f32", "src/affine_elu.comp",
-                ("OP", "elu_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("powf_f32", "src/affine_elu.comp",
-                ("OP", "powf_op"),
-                ("INNER_TYPE", "float"),
-                ("OUTER_TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
+            for op in ["affine", "elu", "powf"] {
+                for (dtype, inner_type, outer_type, is_bf16) in [("f32", "float", "float", "0"), ("f16", "float16_t", "float16_t", "0"), ("bf16", "float", "uint16_t", "1"), ("i64", "int64_t", "int64_t", "0")] {
+                    let (name, config) = register_kernel!(
+                        format!("{}_{}", op, dtype),
+                        "src/affine_elu.comp",
+                        ("OP", format!("{}_op", op)),
+                        ("INNER_TYPE", inner_type),
+                        ("OUTER_TYPE", outer_type),
+                        ("BF16", is_bf16)
+                    );
+                    configs.insert(name, config);
+                }
+            }
         }
 
         // --- GATHER KERNELS ---
@@ -813,26 +593,14 @@ impl Kernels {
 
         // --- COPY2D SHADERS ---
         {
-            let (name, config) = register_kernel!("copy2d_f32", "src/copy2d.comp",
-                ("TYPE", "float")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("copy2d_u32", "src/copy2d.comp",
-                ("TYPE", "uint")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("copy2d_i64", "src/copy2d.comp",
-                ("TYPE", "int64_t")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("copy2d_bf16", "src/copy2d.comp",
-                ("TYPE", "uint16_t")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("copy2d_f16", "src/copy2d.comp",
-                ("TYPE", "float16_t")
-            );
-            configs.insert(name, config);
+            for (dtype, glsl_type) in [("u8", "uint8_t"), ("u32", "uint"), ("i64", "int64_t"), ("f32", "float"), ("f16", "float16_t"), ("bf16", "uint16_t")] {
+                let (name, config) = register_kernel!(
+                    format!("copy2d_{}", dtype),
+                    "src/copy2d.comp",
+                    ("TYPE", "float")
+                );
+                configs.insert(name, config);
+            }
         }
 
         // --- COPY_STRIDED_SRC KERNELS ---
@@ -861,7 +629,7 @@ impl Kernels {
 
         // --- COMPARISON (CMP) KERNELS ---
         {
-            for (dtype, glsl_type) in [("u8", "uint8_t"), ("u32", "uint"), ("i64", "int64_t"), ("f32", "float"), ("f16", "float16_t"), ("bf16", "uint16_T")] {
+            for (dtype, glsl_type) in [("u8", "uint8_t"), ("u32", "uint"), ("i64", "int64_t"), ("f32", "float"), ("f16", "float16_t"), ("bf16", "uint16_t")] {
                 for (op_name, op) in [("eq", "=="), ("ne", "!="), ("lt", "<"), ("gt", ">"), ("le", "<="), ("ge", ">=")] {
                     let (name, config) = register_kernel!(
                         format!("{}_{}", op_name, dtype),
