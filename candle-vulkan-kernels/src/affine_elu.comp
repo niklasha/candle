@@ -2,6 +2,7 @@
 
 #extension GL_EXT_shader_explicit_arithmetic_types : require
 #extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -9,10 +10,10 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 // Buffer bindings.
 layout(set = 0, binding = 0) buffer InputBuffer {
-    float input_data[];
+    OUTER_TYPE input_data[];
 };
 layout(set = 0, binding = 1) buffer OutputBuffer {
-    float output_data[];
+    OUTER_TYPE output_data[];
 };
 
 // Push constants carrying full layout information (up to 4 dimensions)
@@ -81,8 +82,7 @@ void affine_op() {
     }
     if (lin_idx >= total_elems) return;
     uint data_index = get_strided_index(lin_idx);
-    float x = CAST_IN(input_data[data_index]);
-    output_data[lin_idx] = CAST_OUT(x * pc.mul + pc.add);
+    output_data[lin_idx] = CAST_OUT(CAST_IN(input_data[data_index]) * INNER_TYPE(pc.mul) + INNER_TYPE(pc.add));
 }
 
 void elu_op() {
@@ -98,8 +98,8 @@ void elu_op() {
     }
     if (lin_idx >= total_elems) return;
     uint data_index = get_strided_index(lin_idx);
-    float x = CAST_IN(input_data[data_index]);
-    output_data[lin_idx] = CAST_OUT((x >= 0.0) ? x : pc.alpha * (exp(x) - 1.0));
+    INNER_TYPE x = CAST_IN(input_data[data_index]);
+    output_data[lin_idx] = CAST_OUT(x >= INNER_TYPE(0) ? x : INNER_TYPE(pc.alpha * (exp(float(x)) - 1.0)));
 }
 
 void powf_op() {
@@ -115,8 +115,7 @@ void powf_op() {
     }
     if (lin_idx >= total_elems) return;
     uint data_index = get_strided_index(lin_idx);
-    float x = CAST_IN(input_data[data_index]);
-    output_data[lin_idx] = CAST_OUT(pow(x, pc.mul));
+    output_data[lin_idx] = CAST_OUT(INNER_TYPE(pow(float(CAST_IN(input_data[data_index])), pc.mul)));
 }
 
 void main() {

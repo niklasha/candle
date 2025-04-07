@@ -2,6 +2,8 @@
 
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float: enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_buffer_int64 : enable
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -51,11 +53,11 @@ void mul_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(CAST_IN(lhs_data[a_idx]) * CAST_IN(rhs_data[b_idx]));
 }
 
-void min_op(uint idx, uint a_idx, uint b_idx) {
+void minimum_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(min(CAST_IN(lhs_data[a_idx]), CAST_IN(rhs_data[b_idx])));
 }
 
-void max_op(uint idx, uint a_idx, uint b_idx) {
+void maximum_op(uint idx, uint a_idx, uint b_idx) {
     output_data[idx] = CAST_OUT(max(CAST_IN(lhs_data[a_idx]), CAST_IN(rhs_data[b_idx])));
 }
 

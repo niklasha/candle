@@ -448,14 +448,7 @@ impl VulkanStorage {
             num_partials: u32,
         }
 
-        // Only support F32/U32 for now.
         let dtype = self.dtype();
-        if dtype != DType::F32 && dtype != DType::U32 {
-            return Err(VulkanError::Message(format!(
-                "Unsupported dtype: {:?}",
-                dtype
-            )))?;
-        }
         let result_dtype = if to_index { DType::U32 } else { dtype };
 
         if let Some(buffer) = (*self.buffer).clone() {
@@ -2909,6 +2902,7 @@ impl BackendStorage for VulkanStorage {
         let suffix = match self.dtype {
             DType::F32 => "f32",
             DType::BF16 => "bf16",
+            DType::I64 => "i64",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let pipeline = self
@@ -2951,6 +2945,7 @@ impl BackendStorage for VulkanStorage {
         let suffix = match self.dtype {
             DType::F32 => "f32",
             DType::U32 => "u32",
+            DType::I64 => "i64",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         match op {
@@ -3027,6 +3022,7 @@ impl BackendStorage for VulkanStorage {
                 (DType::U32, DType::BF16) => "cast_u32_bf16",
                 (DType::BF16, DType::F16) => "cast_bf16_f16",
                 (DType::U32, DType::I64) => "cast_u32_i64",
+                (DType::I64, DType::U32) => "cast_i64_u32",
                 _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, dtype),
             };
             let pipeline = self
@@ -3637,6 +3633,7 @@ impl BackendStorage for VulkanStorage {
             DType::I64 => "i64",
             DType::BF16 => "bf16",
             DType::F16 => "f16",
+            DType::U8 => "u8",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let key = format!("copy2d_{}", suffix);
