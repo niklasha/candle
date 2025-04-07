@@ -219,19 +219,50 @@ impl VulkanDevice {
             return Ok(None);
         }
 
-        Ok(Some(
-            self.buffer_allocator
-                .lock()
-                .map_err(|e| VulkanError::Message(format!("lock error: {}", e)))?
-                .allocate(
-                    DeviceLayout::from_size_alignment(
-                        buffer_size as DeviceSize,
-                        alignment as DeviceSize,
+        // Define a threshold for using dedicated allocations instead of sub-allocation
+        // E.g., 1 GiB = 1024 * 1024 * 1024 bytes
+        // Adjust this threshold as needed. Set lower if fragmentation is severe.
+        let dedicated_allocation_threshold: usize = 1 * 1024 * 1024 * 1024;
+
+        if buffer_size >= dedicated_allocation_threshold {
+            // --- Allocate large buffers directly (dedicated allocation) ---
+            //println!("Using dedicated allocation for size: {}", buffer_size);
+            let buffer = Buffer::new_slice::<u8>(
+                self.memory_allocator.clone(), // Use the main memory allocator
+                BufferCreateInfo {
+                    // Ensure usage flags match what SubbufferAllocator uses for consistency
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_DST
+                        | BufferUsage::TRANSFER_SRC,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    // PREFER_DEVICE is typical for compute buffers
+                    // DEDICATE_MEMORY hint might be useful but requires extension/feature checks
+                    // Let StandardMemoryAllocator decide best strategy based on size/usage
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                    ..Default::default()
+                },
+                buffer_size as DeviceSize, // Request exact size
+            )
+            .map_err(VulkanError::ValidatedAllocateBufferError)?;
+            // Note: This creates a Buffer<[u8]>, which is compatible with Subbuffer<[u8]> storage
+            Ok(Some(buffer))
+        } else {
+            // --- Use SubbufferAllocator for smaller buffers ---
+            Ok(Some(
+                self.buffer_allocator
+                    .lock()
+                    .map_err(|e| VulkanError::Message(format!("lock error: {}", e)))?
+                    .allocate(
+                        DeviceLayout::from_size_alignment(
+                            buffer_size as DeviceSize,
+                            alignment as DeviceSize,
+                        )
+                            .ok_or(VulkanError::Message("invalid layout".to_string()))?,
                     )
-                    .ok_or(VulkanError::Message("invalid layout".to_string()))?,
-                )
-                .map_err(VulkanError::MemoryAllocatorError)?,
-        ))
+                    .map_err(VulkanError::MemoryAllocatorError)?))
+        }
     }
 }
 
