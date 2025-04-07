@@ -138,7 +138,7 @@ impl VulkanStorage {
         let mut builder = AutoCommandBufferBuilder::primary(
             device.command_buffer_allocator.clone(),
             device.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferUsage::SimultaneousUse,
         )
         .map_err(VulkanError::ValidatedVulkanError)?;
 
@@ -630,7 +630,7 @@ impl VulkanStorage {
         let mut builder = AutoCommandBufferBuilder::primary(
             device.command_buffer_allocator.clone(),
             device.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferUsage::SimultaneousUse,
         )
         .map_err(VulkanError::ValidatedVulkanError)?;
 
@@ -1118,7 +1118,7 @@ impl VulkanStorage {
         let mut builder = AutoCommandBufferBuilder::primary(
             device.command_buffer_allocator.clone(),
             device.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferUsage::SimultaneousUse,
         )
         .map_err(VulkanError::ValidatedVulkanError)?;
         self.pending_future.sync_if_needed()?;

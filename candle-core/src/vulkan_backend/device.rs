@@ -92,12 +92,9 @@ impl VulkanDevice {
 
             // Copy data from the Vulkan buffer to the CPU buffer
             let mut builder = AutoCommandBufferBuilder::primary(
-                Arc::new(StandardCommandBufferAllocator::new(
-                    self.device.clone(),
-                    StandardCommandBufferAllocatorCreateInfo::default(),
-                )),
+                self.command_buffer_allocator.clone(),
                 self.queue.queue_family_index(),
-                CommandBufferUsage::OneTimeSubmit,
+                CommandBufferUsage::MultipleSubmit,
             )
             .map_err(VulkanError::ValidatedVulkanError)?;
 
@@ -145,7 +142,7 @@ impl VulkanDevice {
             let mut builder = AutoCommandBufferBuilder::primary(
                 self.command_buffer_allocator.clone(),
                 self.queue.queue_family_index(),
-                CommandBufferUsage::OneTimeSubmit,
+                CommandBufferUsage::SimultaneousUse,
             )
             .map_err(VulkanError::ValidatedVulkanError)?;
 
