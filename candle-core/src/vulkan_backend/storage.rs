@@ -1,10 +1,14 @@
 #![allow(dead_code)]
 
+use crate::bail;
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
+use crate::scalar::Scalar;
 use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
+use half::{bf16, f16};
+use rand::Rng;
 use vulkano::buffer::{BufferContents, Subbuffer};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract,
@@ -3764,7 +3768,47 @@ impl BackendStorage for VulkanStorage {
         self.copy_op_impl(dst, push_constants, [dispatch_x, dispatch_y, 1], &pipeline)
     }
 
-    fn const_set(&mut self, _: crate::scalar::Scalar, _: &Layout) -> crate::Result<()> {
-        fail!()
+    fn const_set(&mut self, scalar: Scalar, layout: &Layout) -> crate::Result<()> {
+        if let Some(buffer) = (*self.buffer).clone() {
+            let dtype = self.dtype();
+            let shape = layout.shape();
+            let num_elements = shape.elem_count();
+            let future = match dtype {
+                DType::I64 | DType::F64 => {
+                    let value = match (dtype, scalar) {
+                        (DType::I64, Scalar::I64(x)) => x as u64,
+                        (DType::F64, Scalar::F64(x)) => x.to_bits(),
+                        _ => bail!("Unsupported dtype/scalar combination {:?} {:?}", dtype, scalar),
+                    };
+                    self.device.fill(buffer.into(), num_elements, value)
+                }
+                DType::F16 | DType::BF16 => {
+                    let value = match (dtype, scalar) {
+                        (DType::F16, Scalar::F16(x)) => x.to_bits(),
+                        (DType::BF16, Scalar::BF16(x)) => x.to_bits(),
+                        _ => bail!("Unsupported dtype/scalar combination {:?} {:?}", dtype, scalar),
+                    };
+                    self.device.fill(buffer.into(), num_elements, value)
+                }
+                DType::U8 => {
+                    let value = match (dtype, scalar) {
+                        (DType::U8, Scalar::U8(x)) => x,
+                        _ => bail!("Unsupported dtype/scalar combination {:?} {:?}", dtype, scalar),
+                    };
+                    self.device.fill(buffer.into(), num_elements, value)
+                }
+                _ => {
+                    let (count, value) = match (dtype, scalar) {
+                        (DType::F32, Scalar::F32(x)) => (num_elements, x.to_bits()),
+                        (DType::U32, Scalar::U32(x)) => (num_elements, x),
+                        _ => bail!("Unsupported dtype/scalar combination {:?} {:?}", dtype, scalar),
+                    };
+                    self.device.fill_32(buffer.into(), count, value)
+                }
+            }?;
+            self.pending_future.set_future(future)
+        } else {
+            Ok(())
+        }
     }
 }
