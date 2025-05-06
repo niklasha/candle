@@ -199,27 +199,41 @@ impl VulkanDevice {
         }
     }
 
-    pub fn fill_32(&self, buffer: Arc<Subbuffer<[u8]>>, count: usize, value: u32) -> Result<Box<dyn GpuFuture + Send>>
-    {
+    pub fn fill_32(
+        &self,
+        buffer: Arc<Subbuffer<[u8]>>,
+        count: usize,
+        value: u32,
+    ) -> Result<Box<dyn GpuFuture + Send>> {
         let mut builder = AutoCommandBufferBuilder::primary(
             self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
             CommandBufferUsage::SimultaneousUse,
         )
-            .map_err(VulkanError::ValidatedVulkanError)?;
-        
+        .map_err(VulkanError::ValidatedVulkanError)?;
+
         builder
-            .fill_buffer(<Subbuffer<[u8]> as Clone>::clone(&buffer).reinterpret::<[u32]>(), value)
+            .fill_buffer(
+                <Subbuffer<[u8]> as Clone>::clone(&buffer).reinterpret::<[u32]>(),
+                value,
+            )
             .map_err(VulkanError::ValidationError)?;
 
         // Execute command buffer
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
-        Ok(Box::new(command_buffer
-            .execute(self.queue.clone())
-            .map_err(VulkanError::CommandBufferExecError)?))
+        Ok(Box::new(
+            command_buffer
+                .execute(self.queue.clone())
+                .map_err(VulkanError::CommandBufferExecError)?,
+        ))
     }
 
-    pub fn fill<T>(&self, buffer: Arc<Subbuffer<[u8]>>, count: usize, value: T) -> Result<Box<dyn GpuFuture + Send>>
+    pub fn fill<T>(
+        &self,
+        buffer: Arc<Subbuffer<[u8]>>,
+        count: usize,
+        value: T,
+    ) -> Result<Box<dyn GpuFuture + Send>>
     where
         T: vulkano::buffer::BufferContents + Clone + Pod + 'static,
     {
@@ -228,7 +242,7 @@ impl VulkanDevice {
             self.queue.queue_family_index(),
             CommandBufferUsage::SimultaneousUse,
         )
-            .map_err(VulkanError::ValidatedVulkanError)?;
+        .map_err(VulkanError::ValidatedVulkanError)?;
 
         let cpu_buffer = Buffer::from_iter(
             self.memory_allocator.clone(),
@@ -243,7 +257,7 @@ impl VulkanDevice {
             },
             std::iter::repeat(value).take(count),
         )
-            .map_err(VulkanError::ValidatedAllocateBufferError)?;
+        .map_err(VulkanError::ValidatedAllocateBufferError)?;
 
         builder
             .copy_buffer(CopyBufferInfo::buffers(cpu_buffer, (*buffer).clone()))
@@ -251,9 +265,11 @@ impl VulkanDevice {
 
         // Execute command buffer
         let command_buffer = builder.build().map_err(VulkanError::ValidatedVulkanError)?;
-        Ok(Box::new(command_buffer
-            .execute(self.queue.clone())
-            .map_err(VulkanError::CommandBufferExecError)?))
+        Ok(Box::new(
+            command_buffer
+                .execute(self.queue.clone())
+                .map_err(VulkanError::CommandBufferExecError)?,
+        ))
     }
 
     fn allocate_with_data<T>(&self, dtype: DType, data: &[T]) -> Result<VulkanStorage>
@@ -316,9 +332,10 @@ impl VulkanDevice {
                             buffer_size as DeviceSize,
                             alignment as DeviceSize,
                         )
-                            .ok_or(VulkanError::Message("invalid layout".to_string()))?,
+                        .ok_or(VulkanError::Message("invalid layout".to_string()))?,
                     )
-                    .map_err(VulkanError::MemoryAllocatorError)?))
+                    .map_err(VulkanError::MemoryAllocatorError)?,
+            ))
         }
     }
 }

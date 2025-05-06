@@ -1,14 +1,14 @@
 #![allow(dead_code)]
 
-use crate::bail;
 use crate::backend::{BackendDevice, BackendStorage};
+use crate::bail;
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::scalar::Scalar;
 use crate::{CpuStorage, DType, Layout, Result, Shape, VulkanDevice, VulkanError};
-use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
 use half::{bf16, f16};
 use rand::Rng;
+use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard};
 use vulkano::buffer::{BufferContents, Subbuffer};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract,
@@ -3778,7 +3778,11 @@ impl BackendStorage for VulkanStorage {
                     let value = match (dtype, scalar) {
                         (DType::I64, Scalar::I64(x)) => x as u64,
                         (DType::F64, Scalar::F64(x)) => x.to_bits(),
-                        _ => bail!("Unsupported dtype/scalar combination {:?} {:?}", dtype, scalar),
+                        _ => bail!(
+                            "Unsupported dtype/scalar combination {:?} {:?}",
+                            dtype,
+                            scalar
+                        ),
                     };
                     self.device.fill(buffer.into(), num_elements, value)
                 }
@@ -3786,14 +3790,22 @@ impl BackendStorage for VulkanStorage {
                     let value = match (dtype, scalar) {
                         (DType::F16, Scalar::F16(x)) => x.to_bits(),
                         (DType::BF16, Scalar::BF16(x)) => x.to_bits(),
-                        _ => bail!("Unsupported dtype/scalar combination {:?} {:?}", dtype, scalar),
+                        _ => bail!(
+                            "Unsupported dtype/scalar combination {:?} {:?}",
+                            dtype,
+                            scalar
+                        ),
                     };
                     self.device.fill(buffer.into(), num_elements, value)
                 }
                 DType::U8 => {
                     let value = match (dtype, scalar) {
                         (DType::U8, Scalar::U8(x)) => x,
-                        _ => bail!("Unsupported dtype/scalar combination {:?} {:?}", dtype, scalar),
+                        _ => bail!(
+                            "Unsupported dtype/scalar combination {:?} {:?}",
+                            dtype,
+                            scalar
+                        ),
                     };
                     self.device.fill(buffer.into(), num_elements, value)
                 }
@@ -3801,7 +3813,11 @@ impl BackendStorage for VulkanStorage {
                     let (count, value) = match (dtype, scalar) {
                         (DType::F32, Scalar::F32(x)) => (num_elements, x.to_bits()),
                         (DType::U32, Scalar::U32(x)) => (num_elements, x),
-                        _ => bail!("Unsupported dtype/scalar combination {:?} {:?}", dtype, scalar),
+                        _ => bail!(
+                            "Unsupported dtype/scalar combination {:?} {:?}",
+                            dtype,
+                            scalar
+                        ),
                     };
                     self.device.fill_32(buffer.into(), count, value)
                 }

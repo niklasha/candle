@@ -776,7 +776,7 @@ impl Storage {
                 s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
             }
             (Self::Vulkan(s), Self::Vulkan(indexes), Self::Vulkan(source)) => {
-               s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
+                s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
             }
             _ => unreachable!(),
         }
