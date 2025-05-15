@@ -597,7 +597,7 @@ impl Kernels {
                 let (name, config) = register_kernel!(
                     format!("copy2d_{}", dtype),
                     "src/copy2d.comp",
-                    ("TYPE", "float")
+                    ("TYPE", glsl_type)
                 );
                 configs.insert(name, config);
             }
