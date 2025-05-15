@@ -41,14 +41,18 @@ void main() {
     }
 
     // Gather index from index_data[gid]
-    uint idx = uint(index_data[gid]);
-    coord[selected_dim] = idx;
+    IDX_TYPE idx = index_data[gid];
+    if (idx == MAX_IDX)
+        output_data[gid] = TYPE(0);
+    else {
+        coord[selected_dim] = uint(idx);
 
-    // Compute input linear index
-    uint input_idx = base;
-    for (uint d = 0; d < rank; ++d) {
-        input_idx += coord[d] * input_strides[d];
+        // Compute input linear index
+        uint input_idx = base;
+        for (uint d = 0; d < rank; ++d) {
+            input_idx += coord[d] * input_strides[d];
+        }
+
+        output_data[gid] = input_data[input_idx];
     }
-
-    output_data[gid] = input_data[input_idx];
 }

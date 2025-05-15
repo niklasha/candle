@@ -358,96 +358,19 @@ impl Kernels {
 
         // --- GATHER KERNELS ---
         {
-            let (name, config) = register_kernel!("gather_u8_u8", "src/gather.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "uint8_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u8_u32", "src/gather.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u8_i64", "src/gather.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "int64_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u8_bf16", "src/gather.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "uint"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u8_f32", "src/gather.comp",
-                ("IDX_TYPE", "uint8_t"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u32_u8", "src/gather.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "uint8_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u32_u32", "src/gather.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u32_i64", "src/gather.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "int64_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u32_bf16", "src/gather.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "float"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_u32_f32", "src/gather.comp",
-                ("IDX_TYPE", "uint"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_i64_u8", "src/gather.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "uint8_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_i64_u32", "src/gather.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "uint"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_i64_i64", "src/gather.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "int64_t"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_i64_bf16", "src/gather.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "float"),
-                ("BF16", "1")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("gather_i64_f32", "src/gather.comp",
-                ("IDX_TYPE", "int64_t"),
-                ("TYPE", "float"),
-                ("BF16", "0")
-            );
-            configs.insert(name, config);
+            for (idx_dtype, idx_type, max_idx) in [("u8", "uint8_t", "0xFF"), ("u32", "uint", "0xFFFFFFFFU"), ("i64", "int64_t", "0x7FFFFFFFFFFFFFFF")] {
+                for (dtype, glsl_type, is_bf16) in [("u8", "uint8_t", "0"), ("u32", "uint", "0"), ("i64", "int64_t", "0"), ("bf16", "uint", "1"), ("f32", "float", "0")] {
+                    let (name, config) = register_kernel!(
+                        format!("gather_{}_{}", idx_dtype, dtype),
+                        "src/gather.comp",
+                        ("IDX_TYPE", idx_type),
+                        ("MAX_IDX", max_idx),
+                        ("TYPE", glsl_type),
+                        ("BF16", is_bf16)
+                    );
+                    configs.insert(name, config);
+                }
+            }
         }
 
         // --- SCATTER_SET KERNELS ---
