@@ -4,94 +4,94 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_AMD_gpu_shader_half_float : enable
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in; // Example 2D local size
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;// Example 2D local size
 
-#include "common.comp" // Make sure global_linear_id() is defined and works
+#include "common.comp"// Make sure global_linear_id() is defined and works
 
 // --- Type Casting Macros ---
 #if BF16
-    #define CAST_OUT(x) uint16_t((floatBitsToUint(x)+0x8000u)>>16u)
-    #define CAST_IN(x)  uintBitsToFloat(uint(x)<<16u)
+#define CAST_OUT(x) uint16_t((floatBitsToUint(x)+0x8000u)>>16u)
+#define CAST_IN(x)  uintBitsToFloat(uint(x)<<16u)
 #else
-    #define CAST_OUT(x) OUTER_TYPE(x)
-    #define CAST_IN(x)  INNER_TYPE(x)
+#define CAST_OUT(x) OUTER_TYPE(x)
+#define CAST_IN(x)  INNER_TYPE(x)
 #endif
 
 // --- Push Constants (Must match Rust struct exactly) ---
 layout(push_constant) uniform PushConstants {
-uint in_base; uint in_rank; uvec2 _pad_in; uvec4 in_shape; uvec4 in_stride;
-uint ker_base; uint ker_rank; uvec2 _pad_ker; uvec4 ker_shape; uvec4 ker_stride;
-uint b_size; uint c_in; uint h_in; uint w_in; uint c_out; uint k_h; uint k_w; uint h_out; uint w_out;
-uint padding; uint stride; uint dilation;
+    uint in_base; uint in_rank; uvec2 _pad_in; uvec4 in_shape; uvec4 in_stride;
+    uint ker_base; uint ker_rank; uvec2 _pad_ker; uvec4 ker_shape; uvec4 ker_stride;
+    uint b_size; uint c_in; uint h_in; uint w_in; uint c_out; uint k_h; uint k_w; uint h_out; uint w_out;
+    uint padding; uint stride; uint dilation;
 } pc;
 
 // --- Buffer Bindings ---
 layout(set = 0, binding = 0) readonly buffer InputBuffer { OUTER_TYPE input_data[]; };
 layout(set = 0, binding = 1) readonly buffer KernelBuffer { OUTER_TYPE kernel_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutputBuffer { OUTER_TYPE output_data[]; }; // Assumed contiguous [B, Cout, Hout, Wout]
+layout(set = 0, binding = 2) writeonly buffer OutputBuffer { OUTER_TYPE output_data[]; };// Assumed contiguous [B, Cout, Hout, Wout]
 
 // --- 4D Indexing Helpers ---
 // Physical index for Input [B, Cin, Hin, Win]
 uint get_input_physical_index(uint b, uint c, uint h, uint w) {
-return pc.in_base + b * pc.in_stride.x + c * pc.in_stride.y + h * pc.in_stride.z + w * pc.in_stride.w;
+    return pc.in_base + b * pc.in_stride.x + c * pc.in_stride.y + h * pc.in_stride.z + w * pc.in_stride.w;
 }
 
 // Physical index for Kernel [Cout/G, Cin/G, KH, KW]
 uint get_kernel_physical_index(uint oc_pg, uint ic_pg, uint kh, uint kw) {
-// Note: Parameter names match conv2d kernel indexing [Cout, Cin, KH, KW]
-return pc.ker_base + oc_pg * pc.ker_stride.x + ic_pg * pc.ker_stride.y + kh * pc.ker_stride.z + kw * pc.ker_stride.w;
+    // Note: Parameter names match conv2d kernel indexing [Cout, Cin, KH, KW]
+    return pc.ker_base + oc_pg * pc.ker_stride.x + ic_pg * pc.ker_stride.y + kh * pc.ker_stride.z + kw * pc.ker_stride.w;
 }
 
 // --- Main Kernel Logic ---
 void main() {
-// <<< --- START: ADD THIS BLOCK --- >>>
-// Calculate flat global ID (assuming 1D dispatch for simplicity)
-uint gid = global_linear_id(); // Use your common helper
+    // <<< --- START: ADD THIS BLOCK --- >>>
+    // Calculate flat global ID (assuming 1D dispatch for simplicity)
+    uint gid = global_linear_id();// Use your common helper
 
-// Calculate total elements and bounds check
-uint total_output_elements = pc.b_size * pc.c_out * pc.h_out * pc.w_out;
-if (gid >= total_output_elements) return;
+    // Calculate total elements and bounds check
+    uint total_output_elements = pc.b_size * pc.c_out * pc.h_out * pc.w_out;
+    if (gid >= total_output_elements) return;
 
-// Decode flat output index `gid` into logical output coordinates [b, oc, oh, ow]
-// Output layout is assumed contiguous [B, Cout, Hout, Wout]
-uint out_stride_b = pc.c_out * pc.h_out * pc.w_out;
-uint out_stride_c = pc.h_out * pc.w_out;
-uint out_stride_h = pc.w_out;
+    // Decode flat output index `gid` into logical output coordinates [b, oc, oh, ow]
+    // Output layout is assumed contiguous [B, Cout, Hout, Wout]
+    uint out_stride_b = pc.c_out * pc.h_out * pc.w_out;
+    uint out_stride_c = pc.h_out * pc.w_out;
+    uint out_stride_h = pc.w_out;
 
-uint b  = gid / out_stride_b;
-uint rc = gid % out_stride_b;
-uint oc = rc / out_stride_c; // Output Channel index (0..pc.c_out-1)
-uint rh = rc % out_stride_c;
-uint oh = rh / out_stride_h; // Output Height index (0..pc.h_out-1)
-uint ow = rh % out_stride_h; // Output Width index (0..pc.w_out-1)
-// <<< --- END: ADD THIS BLOCK --- >>>
+    uint b  = gid / out_stride_b;
+    uint rc = gid % out_stride_b;
+    uint oc = rc / out_stride_c;// Output Channel index (0..pc.c_out-1)
+    uint rh = rc % out_stride_c;
+    uint oh = rh / out_stride_h;// Output Height index (0..pc.h_out-1)
+    uint ow = rh % out_stride_h;// Output Width index (0..pc.w_out-1)
+    // <<< --- END: ADD THIS BLOCK --- >>>
 
 
-INNER_TYPE sum = INNER_TYPE(0.0);
+    INNER_TYPE sum = INNER_TYPE(0.0);
 
-// No group calculations needed here
-// pc.c_in IS the number of input channels for this group/call
+    // No group calculations needed here
+    // pc.c_in IS the number of input channels for this group/call
 
-for (uint ic = 0; ic < pc.c_in; ++ic) { // Loop over ALL input channels for this group
-for (uint kh = 0; kh < pc.k_h; ++kh) {
-// Use single pc.padding, pc.stride, pc.dilation
-int ih = int(oh * pc.stride) - int(pc.padding) + int(kh * pc.dilation);
-for (uint kw = 0; kw < pc.k_w; ++kw) {
-int iw = int(ow * pc.stride) - int(pc.padding) + int(kw * pc.dilation);
+    for (uint ic = 0; ic < pc.c_in; ++ic) { // Loop over ALL input channels for this group
+        for (uint kh = 0; kh < pc.k_h; ++kh) {
+            // Use single pc.padding, pc.stride, pc.dilation
+            int ih = int(oh * pc.stride) - int(pc.padding) + int(kh * pc.dilation);
+            for (uint kw = 0; kw < pc.k_w; ++kw) {
+                int iw = int(ow * pc.stride) - int(pc.padding) + int(kw * pc.dilation);
 
-if (ih >= 0 && ih < pc.h_in && iw >= 0 && iw < pc.w_in) {
-// Ensure all arguments are uint
-uint input_phys_idx = get_input_physical_index(b, ic, uint(ih), uint(iw));
-// Kernel index assumes kernel buffer has shape [Cout_per_group, Cin_per_group, KH, KW]
-uint kernel_phys_idx = get_kernel_physical_index(oc, ic, kh, kw);
+                if (ih >= 0 && ih < pc.h_in && iw >= 0 && iw < pc.w_in) {
+                    // Ensure all arguments are uint
+                    uint input_phys_idx = get_input_physical_index(b, ic, uint(ih), uint(iw));
+                    // Kernel index assumes kernel buffer has shape [Cout_per_group, Cin_per_group, KH, KW]
+                    uint kernel_phys_idx = get_kernel_physical_index(oc, ic, kh, kw);
 
-INNER_TYPE in_val = CAST_IN(input_data[input_phys_idx]);
-INNER_TYPE ker_val = CAST_IN(kernel_data[kernel_phys_idx]);
-sum += in_val * ker_val;
-}
-// Padding implicitly handled by the bounds check above
-}
-}
-}
-output_data[gid] = CAST_OUT(sum); // Now gid should be defined
+                    INNER_TYPE in_val = CAST_IN(input_data[input_phys_idx]);
+                    INNER_TYPE ker_val = CAST_IN(kernel_data[kernel_phys_idx]);
+                    sum += in_val * ker_val;
+                }
+                // Padding implicitly handled by the bounds check above
+            }
+        }
+    }
+    output_data[gid] = CAST_OUT(sum);// Now gid should be defined
 }
