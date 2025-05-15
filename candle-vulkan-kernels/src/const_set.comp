@@ -1,0 +1,34 @@
+#version 450
+
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include "common.comp"
+
+layout(set = 0, binding = 0) buffer InputBuffer {
+    TYPE data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint rank;
+    uint base;
+    uint shape[MAX_RANK];  // Logical shape of the view
+    uint stride[MAX_RANK]; // Physical strides of the view
+    uint lo;
+    uint hi;
+    uint count;
+} pc;
+
+void main() {
+    uint gid = global_linear_id();
+    if (gid >= pc.count) return;
+    uint idx = get_physical_index(pc.rank, pc.base, pc.shape, pc.stride, gid);
+    #if MASK
+    data[idx] = TYPE(pc.lo & MASK);
+    #else
+    data[idx] = TYPE(pc.lo) | (TYPE(pc.hi) << 32);
+    #endif
+}

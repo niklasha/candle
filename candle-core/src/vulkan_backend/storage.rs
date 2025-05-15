@@ -1147,6 +1147,113 @@ impl VulkanStorage {
         Ok(())
     }
 
+    fn const_set_op_impl(
+        &mut self,
+        scalar: Scalar,
+        layout: &Layout,
+        pipeline: &Arc<ComputePipeline>,
+    ) -> Result<()> {
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+        struct ConstSetPushConstants {
+            rank: u32,
+            base: u32,
+            shape: [u32; MAX_RANK],
+            stride: [u32; MAX_RANK],
+            lo: u32, // Lower 32 bits of scalar
+            hi: u32, // Upper 32 bits of scalar (for 64-bit case)
+            count: u32,
+        }
+
+        if let Some(buffer) =  (*self.buffer).clone() {
+            // --- Layout and Element Count ---
+            let view_shape = layout.shape();
+            let rank = view_shape.rank();
+            if rank == 0 { return Ok(()); } // Cannot set 0-rank tensor elements this way
+            if rank > MAX_RANK {
+                return Err(VulkanError::Message(format!(
+                    "const_set: Vulkan backend only supports rank up to {}, got {}",
+                    MAX_RANK, rank
+                )).into());
+            }
+            let total_elements_in_view = view_shape.elem_count();
+            if total_elements_in_view == 0 {
+                return Ok(()); // Nothing to set
+            }
+
+            let mut shape_arr = [1u32; MAX_RANK];
+            let mut stride_arr = [1u32; MAX_RANK];
+            for i in 0..rank {
+                shape_arr[i] = view_shape.dims()[i] as u32;
+                stride_arr[i] = layout.stride()[i] as u32;
+            }
+            let base = layout.start_offset() as u32;
+
+            // --- Prepare Scalar Bits (lo, hi) ---
+            // The `width` parameter used in kernel registration (8, 16, 32, 0 for 64)
+            // determines which shader (and thus which MASK) is used.
+            // Here, we just need to provide the bits.
+            let (lo_bits, hi_bits) = match scalar {
+                Scalar::U8(v) => (v as u32, 0u32),
+                Scalar::BF16(v) => (v.to_bits() as u32, 0u32),
+                Scalar::F16(v) => (v.to_bits() as u32, 0u32),
+                Scalar::U32(v) => (v, 0u32),
+                Scalar::F32(v) => (v.to_bits(), 0u32),
+                Scalar::I64(v) => {
+                    let bits = v as u64;
+                    ((bits & 0xFFFFFFFF) as u32, (bits >> 32) as u32)
+                }
+                Scalar::F64(v) => {
+                    let bits = v.to_bits();
+                    ((bits & 0xFFFFFFFF) as u32, (bits >> 32) as u32)
+                }
+            };
+
+            // --- Dtype Check ---
+            // This check ensures that the type of the scalar being set is
+            // compatible with the DType of the buffer.
+            // E.g., you can't set an F64 scalar into a U8 buffer via this mechanism usually.
+            // The shader's `TYPE` (from glsl_type) must match what's expected for the scalar bits.
+            match (self.dtype(), scalar) {
+                (DType::U8, Scalar::U8(_)) | (DType::F16, Scalar::F16(_))
+                | (DType::BF16, Scalar::BF16(_)) | (DType::U32, Scalar::U32(_))
+                | (DType::F32, Scalar::F32(_)) | (DType::I64, Scalar::I64(_))
+                | (DType::F64, Scalar::F64(_)) => (),
+                (buffer_dtype, scalar_val) => {
+                    return Err(crate::Error::DTypeMismatchBinaryOp {
+                        lhs: buffer_dtype, // This is self.dtype()
+                        rhs: scalar_val.dtype(),
+                        op: "const_set",
+                    }
+                        .bt());
+                }
+            }
+
+            let push_constants = ConstSetPushConstants {
+                rank: rank as u32,
+                base,
+                shape: shape_arr,
+                stride: stride_arr,
+                lo: lo_bits,
+                hi: hi_bits,
+                count: total_elements_in_view as u32,
+            };
+
+            // --- Execute Kernel ---
+            // 'self' is the output buffer being modified.
+            // Its previous future must be waited on.
+            self.execute_compute_kernel(
+                pipeline,
+                vec![],         // Dependency: previous state of self // XXX correct?
+                vec![buffer],         // Output: self is being modified
+                [total_elements_in_view as u32, 1, 1],
+                push_constants,
+                false, // Let execute_compute_kernel calculate workgroups
+            )?;
+        }
+        Ok(())
+    }
+
     /// Low-level helper that dispatches the cmp shader.
     /// It assumes that:
     /// - `rhs` is the second operand.
@@ -3769,62 +3876,22 @@ impl BackendStorage for VulkanStorage {
     }
 
     fn const_set(&mut self, scalar: Scalar, layout: &Layout) -> crate::Result<()> {
-        if let Some(buffer) = (*self.buffer).clone() {
-            let dtype = self.dtype();
-            let shape = layout.shape();
-            let num_elements = shape.elem_count();
-            let future = match dtype {
-                DType::I64 | DType::F64 => {
-                    let value = match (dtype, scalar) {
-                        (DType::I64, Scalar::I64(x)) => x as u64,
-                        (DType::F64, Scalar::F64(x)) => x.to_bits(),
-                        _ => bail!(
-                            "Unsupported dtype/scalar combination {:?} {:?}",
-                            dtype,
-                            scalar
-                        ),
-                    };
-                    self.device.fill(buffer.into(), num_elements, value)
-                }
-                DType::F16 | DType::BF16 => {
-                    let value = match (dtype, scalar) {
-                        (DType::F16, Scalar::F16(x)) => x.to_bits(),
-                        (DType::BF16, Scalar::BF16(x)) => x.to_bits(),
-                        _ => bail!(
-                            "Unsupported dtype/scalar combination {:?} {:?}",
-                            dtype,
-                            scalar
-                        ),
-                    };
-                    self.device.fill(buffer.into(), num_elements, value)
-                }
-                DType::U8 => {
-                    let value = match (dtype, scalar) {
-                        (DType::U8, Scalar::U8(x)) => x,
-                        _ => bail!(
-                            "Unsupported dtype/scalar combination {:?} {:?}",
-                            dtype,
-                            scalar
-                        ),
-                    };
-                    self.device.fill(buffer.into(), num_elements, value)
-                }
-                _ => {
-                    let (count, value) = match (dtype, scalar) {
-                        (DType::F32, Scalar::F32(x)) => (num_elements, x.to_bits()),
-                        (DType::U32, Scalar::U32(x)) => (num_elements, x),
-                        _ => bail!(
-                            "Unsupported dtype/scalar combination {:?} {:?}",
-                            dtype,
-                            scalar
-                        ),
-                    };
-                    self.device.fill_32(buffer.into(), count, value)
-                }
-            }?;
-            self.pending_future.set_future(future)
-        } else {
-            Ok(())
-        }
+        // Determine the correct shader variant based on self.dtype()
+        // This must match the (width, glsl_type) logic in kernel registration
+        let suffix = match self.dtype() {
+            DType::U8 => 8,
+            DType::F16 | DType::BF16 => 16,
+            DType::U32 | DType::F32 => 32,
+            DType::I64 | DType::F64 => 0, // 0 for 64-bit mask logic
+        };
+
+        let key = format!("const_set_{}", suffix);
+        let pipeline = self
+            .device
+            .kernels()
+            .load_pipeline(self.device.device(), &key, None)
+            .map_err(VulkanError::from)?;
+
+        self.const_set_op_impl(scalar, layout, &pipeline)
     }
 }

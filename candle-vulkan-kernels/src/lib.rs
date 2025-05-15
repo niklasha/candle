@@ -591,6 +591,19 @@ impl Kernels {
             }
         }
 
+        // --- CONST_SET KERNELS ---
+        // The zero width will cause a zero mask which in the shader is interpreted as meaning 64
+        // bits
+        for (width, glsl_type) in [(8u64, "uint8_t"), (16, "uint16_t"), (32, "uint"), (0, "int64_t")] {
+            let (name, config) = register_kernel!(
+                format!("const_set_{}", width),
+                "src/const_set.comp",
+                ("MASK", ((1u64 << width) - 1).to_string()),
+                ("TYPE", glsl_type),
+            );
+            configs.insert(name, config);
+        }
+
         // --- COPY2D SHADERS ---
         {
             for (dtype, glsl_type) in [("u8", "uint8_t"), ("u32", "uint"), ("i64", "int64_t"), ("f32", "float"), ("f16", "float16_t"), ("bf16", "uint16_t")] {
