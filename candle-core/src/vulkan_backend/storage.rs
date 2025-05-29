@@ -800,12 +800,12 @@ impl VulkanStorage {
             let out_base = layout.start_offset() as u32;
 
             // Prepare padded strides
-            let mut padded_input_strides = [0u32; 4];
-            let mut padded_output_strides = [0u32; 4];
+            let mut input_strides = [0u32; 4];
+            let mut output_strides = [0u32; 4];
 
             for i in 0..rank.min(4) {
-                padded_input_strides[i] = src_layout.stride()[i] as u32;
-                padded_output_strides[i] = layout.stride()[i] as u32;
+                input_strides[i] = src_layout.stride()[i] as u32;
+                output_strides[i] = layout.stride()[i] as u32;
             }
 
             let push_constants = ScatterSetPushConstants {
@@ -813,9 +813,9 @@ impl VulkanStorage {
                 rank: rank as u32,
                 in_base,
                 out_base,
+                input_strides,
+                output_strides,
                 selected_dim: dim as u32,
-                input_strides: padded_input_strides,
-                output_strides: padded_output_strides,
             };
 
             self.pending_future.sync_if_needed()?;
@@ -829,11 +829,8 @@ impl VulkanStorage {
                 push_constants,
                 false,
             )?;
-
-            Ok(())
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     fn scatter_add_set_op_impl(
@@ -855,33 +852,40 @@ impl VulkanStorage {
             struct ScatterAddSetPushConstants {
                 total_src_elems: u32,
                 rank: u32,
-                selected_dim: u32,
-                _pad: u32,
+                in_base: u32,
+                out_base: u32,
                 input_strides: [u32; 4],
                 output_strides: [u32; 4],
+                selected_dim: u32,
             }
 
             let rank = src_layout.shape().rank();
+            let in_base = src_layout.start_offset() as u32;
             let total_src_elems = src_layout.shape().elem_count() as u32;
+            let out_base = layout.start_offset() as u32;
 
             // Prepare padded strides
-            let mut padded_input_strides = [0u32; 4];
-            let mut padded_output_strides = [0u32; 4];
+            let mut input_strides = [0u32; 4];
+            let mut output_strides = [0u32; 4];
 
             for i in 0..rank.min(4) {
-                padded_input_strides[i] = src_layout.stride()[i] as u32;
-                padded_output_strides[i] = layout.stride()[i] as u32;
+                input_strides[i] = src_layout.stride()[i] as u32;
+                output_strides[i] = layout.stride()[i] as u32;
             }
 
             let push_constants = ScatterAddSetPushConstants {
                 total_src_elems,
                 rank: rank as u32,
+                in_base,
+                out_base,
+                input_strides,
+                output_strides,
                 selected_dim: dim as u32,
-                _pad: 0,
-                input_strides: padded_input_strides,
-                output_strides: padded_output_strides,
             };
 
+            self.pending_future.sync_if_needed()?;
+            ids.pending_future.sync_if_needed()?;
+            src.pending_future.sync_if_needed()?;
             self.execute_compute_kernel(
                 pipeline,
                 vec![src_buf, idx_buf],
@@ -890,11 +894,8 @@ impl VulkanStorage {
                 push_constants,
                 false,
             )?;
-
-            Ok(())
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     fn index_select_op_impl(

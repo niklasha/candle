@@ -749,6 +749,9 @@ impl Storage {
             (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
                 s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
             }
+            (Self::Vulkan(s), Self::Vulkan(indexes), Self::Vulkan(source)) => {
+                s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
+            }
             _ => unreachable!(),
         }
         Ok(())
