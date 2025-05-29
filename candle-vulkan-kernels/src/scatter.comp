@@ -1,148 +1,148 @@
-#version 450
-
-#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
-#extension GL_EXT_shader_8bit_storage : require
-#extension GL_EXT_shader_16bit_storage : require
-#extension GL_AMD_gpu_shader_half_float : enable
-#extension GL_EXT_shader_atomic_int64 : enable
-
-layout(local_size_x = 256) in;
-
-#include "common.comp"
-
-layout(local_size_x = 256) in;
-
-layout(set = 0, binding = 0) buffer Input {
-    TYPE input_data[];
-};
-layout(set = 0, binding = 1) buffer Indices {
-    IDX_TYPE index_data[];
-};
-layout(set = 0, binding = 2) buffer Output {
-    TYPE output_data[];
-};
-
-layout(push_constant) uniform PushConstants {
-    uint total_src_elems;
-    uint rank;
-    uint in_base;
-    uint out_base;
-    uvec4 input_strides;
-    uvec4 output_strides;
-    uint selected_dim;
-};
-
-void main() {
-    uint gid = global_linear_id();
-    if (gid >= total_src_elems) return;
-
-    // Decode input coordinate from linear index
-    uvec4 coord = uvec4(0);
-    uint rem = gid;
-    for (uint d = 0; d < rank; ++d) {
-        coord[d] = rem / input_strides[d];
-        rem %= input_strides[d];
-    }
-
-    // Replace selected coordinate with index lookup
-    coord[selected_dim] = uint(index_data[gid]);
-
-    // Compute output linear index
-    uint dst_idx = out_base;
-    for (uint d = 0; d < rank; ++d) {
-        dst_idx += coord[d] * output_strides[d];
-    }
-
-    output_data[dst_idx] = input_data[in_base + gid];
-}
-
-
 //#version 450
 //
+//#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
 //#extension GL_EXT_shader_8bit_storage : require
 //#extension GL_EXT_shader_16bit_storage : require
+//#extension GL_AMD_gpu_shader_half_float : enable
+//#extension GL_EXT_shader_atomic_int64 : enable
 //
 //layout(local_size_x = 256) in;
 //
-//#include "common.comp" // Assumed for global_linear_id()
+//#include "common.comp"
+//
+//layout(local_size_x = 256) in;
+//
+//layout(set = 0, binding = 0) buffer Input {
+//    TYPE input_data[];
+//};
+//layout(set = 0, binding = 1) buffer Indices {
+//    IDX_TYPE index_data[];
+//};
+//layout(set = 0, binding = 2) buffer Output {
+//    TYPE output_data[];
+//};
 //
 //layout(push_constant) uniform PushConstants {
-//    uint src_base; uint src_rank; uint src_shape[MAX_RANK]; uint src_stride[MAX_RANK];
-//    uint ids_base; uint ids_stride[MAX_RANK]; // ids_rank/shape assumed same as src
-//    uint dst_base; uint dst_rank; uint dst_shape[MAX_RANK]; uint dst_stride[MAX_RANK];
-//    uint left_s; uint src_sel_dim_s; uint right_s; uint dst_sel_dim_s;
-//    uint sel_dim;
-//    uint num_planes;
-//} pc;
-//
-//layout(set = 0, binding = 0) readonly buffer SrcBuffer { TYPE src_d[]; };
-//layout(set = 0, binding = 1) readonly buffer IdsBuffer { IDX_TYPE ids_d[]; };
-//layout(set = 0, binding = 2) buffer DstBuffer { TYPE dst_d[]; };
-//
-//uint get_phys_idx(uint base, uint rank, uint strides[MAX_RANK], uint lcoords[MAX_RANK]) {
-//    uint offset = 0;
-//    for (uint i = 0; i < rank; ++i) { offset += lcoords[i] * strides[i]; }
-//    return base + offset;
-//}
+//    uint total_src_elems;
+//    uint rank;
+//    uint in_base;
+//    uint out_base;
+//    uvec4 input_strides;
+//    uvec4 output_strides;
+//    uint selected_dim;
+//};
 //
 //void main() {
-//    uint plane_idx = gl_GlobalInvocationID.x;
-//    if (plane_idx >= pc.num_planes) return;
+//    uint gid = global_linear_id();
+//    if (gid >= total_src_elems) return;
 //
-//    uint common_prefix_coords[MAX_RANK];
-//    uint common_suffix_coords[MAX_RANK];
-//    uint temp_idx;
-//
-//    temp_idx = plane_idx / pc.right_s;
-//    for (int d = int(pc.sel_dim) - 1; d >= 0; --d) {
-//        uint ds = pc.dst_shape[d];
-//        common_prefix_coords[d] = (ds <= 1) ? 0 : (temp_idx % ds);
-//        if (ds > 1) temp_idx /= ds;
+//    // Decode input coordinate from linear index
+//    uvec4 coord = uvec4(0);
+//    uint rem = gid;
+//    for (uint d = 0; d < rank; ++d) {
+//        coord[d] = rem / input_strides[d];
+//        rem %= input_strides[d];
 //    }
 //
-//    temp_idx = plane_idx % pc.right_s;
-//    for (int d = int(pc.dst_rank) - 1; d > int(pc.sel_dim); --d) {
-//        uint ds = pc.dst_shape[d];
-//        common_suffix_coords[d] = (ds <= 1) ? 0 : (temp_idx % ds);
-//        if (ds > 1) temp_idx /= ds;
+//    // Replace selected coordinate with index lookup
+//    coord[selected_dim] = uint(index_data[gid]);
+//
+//    // Compute output linear index
+//    uint dst_idx = out_base;
+//    for (uint d = 0; d < rank; ++d) {
+//        dst_idx += coord[d] * output_strides[d];
 //    }
 //
-//    uint src_lcoords[MAX_RANK];
-//    uint ids_lcoords[MAX_RANK]; // Assuming ids has same logical structure as src
-//
-//    for (uint j = 0; j < pc.src_sel_dim_s; ++j) {
-//        for(uint d=0; d < pc.src_rank; ++d) {
-//            if (d < pc.sel_dim) {
-//                src_lcoords[d] = common_prefix_coords[d];
-//                ids_lcoords[d] = common_prefix_coords[d];
-//            } else if (d == pc.sel_dim) {
-//                src_lcoords[d] = j;
-//                ids_lcoords[d] = j;
-//            } else { // d > pc.sel_dim
-//                src_lcoords[d] = common_suffix_coords[d];
-//                ids_lcoords[d] = common_suffix_coords[d];
-//            }
-//        }
-//
-//        uint src_phys_idx = get_phys_idx(pc.src_base, pc.src_rank, pc.src_stride, src_lcoords);
-//        uint ids_phys_idx = get_phys_idx(pc.ids_base, pc.src_rank, pc.ids_stride, ids_lcoords);
-//
-//        TYPE src_val = src_d[src_phys_idx];
-//        IDX_TYPE dst_sel_coord = ids_d[ids_phys_idx];
-//
-//        if (dst_sel_coord < pc.dst_sel_dim_s) {
-//            uint dst_lcoords[MAX_RANK];
-//            for(uint d=0; d < pc.dst_rank; ++d) {
-//                if (d < pc.sel_dim) {
-//                    dst_lcoords[d] = common_prefix_coords[d];
-//                } else if (d == pc.sel_dim) {
-//                    dst_lcoords[d] = uint(dst_sel_coord);
-//                } else { // d > pc.sel_dim
-//                    dst_lcoords[d] = common_suffix_coords[d];
-//                }
-//            }
-//            uint dst_phys_idx = get_phys_idx(pc.dst_base, pc.dst_rank, pc.dst_stride, dst_lcoords);
-//            dst_d[dst_phys_idx] = src_val;
-//        }
-//    }
+//    output_data[dst_idx] = input_data[in_base + gid];
 //}
+
+
+#version 450
+
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(local_size_x = 256) in;
+
+#include "common.comp" // Assumed for global_linear_id()
+
+layout(push_constant) uniform PushConstants {
+    uint src_base; uint src_rank; uint src_shape[MAX_RANK]; uint src_stride[MAX_RANK];
+    uint ids_base; uint ids_stride[MAX_RANK]; // ids_rank/shape assumed same as src
+    uint dst_base; uint dst_rank; uint dst_shape[MAX_RANK]; uint dst_stride[MAX_RANK];
+    uint left_s; uint src_sel_dim_s; uint right_s; uint dst_sel_dim_s;
+    uint sel_dim;
+    uint num_planes;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer SrcBuffer { TYPE src_d[]; };
+layout(set = 0, binding = 1) readonly buffer IdsBuffer { IDX_TYPE ids_d[]; };
+layout(set = 0, binding = 2) buffer DstBuffer { TYPE dst_d[]; };
+
+uint get_phys_idx(uint base, uint rank, uint strides[MAX_RANK], uint lcoords[MAX_RANK]) {
+    uint offset = 0;
+    for (uint i = 0; i < rank; ++i) { offset += lcoords[i] * strides[i]; }
+    return base + offset;
+}
+
+void main() {
+    uint plane_idx = gl_GlobalInvocationID.x;
+    if (plane_idx >= pc.num_planes) return;
+
+    uint common_prefix_coords[MAX_RANK];
+    uint common_suffix_coords[MAX_RANK];
+    uint temp_idx;
+
+    temp_idx = plane_idx / pc.right_s;
+    for (int d = int(pc.sel_dim) - 1; d >= 0; --d) {
+        uint ds = pc.dst_shape[d];
+        common_prefix_coords[d] = (ds <= 1) ? 0 : (temp_idx % ds);
+        if (ds > 1) temp_idx /= ds;
+    }
+
+    temp_idx = plane_idx % pc.right_s;
+    for (int d = int(pc.dst_rank) - 1; d > int(pc.sel_dim); --d) {
+        uint ds = pc.dst_shape[d];
+        common_suffix_coords[d] = (ds <= 1) ? 0 : (temp_idx % ds);
+        if (ds > 1) temp_idx /= ds;
+    }
+
+    uint src_lcoords[MAX_RANK];
+    uint ids_lcoords[MAX_RANK]; // Assuming ids has same logical structure as src
+
+    for (uint j = 0; j < pc.src_sel_dim_s; ++j) {
+        for(uint d=0; d < pc.src_rank; ++d) {
+            if (d < pc.sel_dim) {
+                src_lcoords[d] = common_prefix_coords[d];
+                ids_lcoords[d] = common_prefix_coords[d];
+            } else if (d == pc.sel_dim) {
+                src_lcoords[d] = j;
+                ids_lcoords[d] = j;
+            } else { // d > pc.sel_dim
+                src_lcoords[d] = common_suffix_coords[d];
+                ids_lcoords[d] = common_suffix_coords[d];
+            }
+        }
+
+        uint src_phys_idx = get_phys_idx(pc.src_base, pc.src_rank, pc.src_stride, src_lcoords);
+        uint ids_phys_idx = get_phys_idx(pc.ids_base, pc.src_rank, pc.ids_stride, ids_lcoords);
+
+        TYPE src_val = src_d[src_phys_idx];
+        IDX_TYPE dst_sel_coord = ids_d[ids_phys_idx];
+
+        if (dst_sel_coord < pc.dst_sel_dim_s) {
+            uint dst_lcoords[MAX_RANK];
+            for(uint d=0; d < pc.dst_rank; ++d) {
+                if (d < pc.sel_dim) {
+                    dst_lcoords[d] = common_prefix_coords[d];
+                } else if (d == pc.sel_dim) {
+                    dst_lcoords[d] = uint(dst_sel_coord);
+                } else { // d > pc.sel_dim
+                    dst_lcoords[d] = common_suffix_coords[d];
+                }
+            }
+            uint dst_phys_idx = get_phys_idx(pc.dst_base, pc.dst_rank, pc.dst_stride, dst_lcoords);
+            dst_d[dst_phys_idx] = src_val;
+        }
+    }
+}

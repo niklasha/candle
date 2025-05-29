@@ -772,6 +772,7 @@ impl VulkanStorage {
         &mut self,
         layout: &Layout,
         ids: &Self,
+        ids_layout: &Layout,
         src: &Self,
         src_layout: &Layout,
         pipeline: &Arc<ComputePipeline>,
@@ -785,37 +786,81 @@ impl VulkanStorage {
             #[repr(C)]
             #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
             struct ScatterSetPushConstants {
-                total_src_elems: u32,
-                rank: u32,
-                in_base: u32,
-                out_base: u32,
-                input_strides: [u32; 4],
-                output_strides: [u32; 4],
-                selected_dim: u32,
+                src_base: u32, src_rank: u32, src_shape: [u32; MAX_RANK], src_stride: [u32; MAX_RANK],
+                ids_base: u32, /*ids_rank, ids_shape assumed same as src*/ ids_stride: [u32; MAX_RANK],
+                dst_base: u32, dst_rank: u32, dst_shape: [u32; MAX_RANK], dst_stride: [u32; MAX_RANK],
+                left_size: u32, src_selected_dim_size: u32, right_size: u32, dst_selected_dim_size: u32, // Shortened
+                sel_dim: u32,
+                num_planes: u32, // Shortened from total_plane_elements
             }
 
-            let rank = src_layout.shape().rank();
-            let in_base = src_layout.start_offset() as u32;
-            let total_src_elems = src_layout.shape().elem_count() as u32;
-            let out_base = layout.start_offset() as u32;
+            // --- Validate Ranks and Shapes ---
+            let src_rank = src_layout.shape().rank();
+            let ids_rank = ids_layout.shape().rank();
+            let dst_rank = layout.shape().rank();
 
-            // Prepare padded strides
-            let mut input_strides = [0u32; 4];
-            let mut output_strides = [0u32; 4];
-
-            for i in 0..rank.min(4) {
-                input_strides[i] = src_layout.stride()[i] as u32;
-                output_strides[i] = layout.stride()[i] as u32;
+            if src_rank > MAX_RANK || ids_rank > MAX_RANK || dst_rank > MAX_RANK { /* Error */ }
+            if src_rank == 0 || ids_rank == 0 || dst_rank == 0 { return Ok(()); /* Or error */ }
+            if dim >= dst_rank { /* Error: selected_dim out of bounds for dst */ }
+            // src and ids must have the same rank and shape
+            if src_rank != ids_rank || src_layout.shape().dims() != ids_layout.shape().dims() {
+                return Err(crate::Error::ShapeMismatchBinaryOp {
+                    lhs: src_layout.shape().clone(),
+                    rhs: ids_layout.shape().clone(),
+                    op: "scatter_set (src/ids shape mismatch)",
+                }.bt());
             }
+            // Ranks of non-scattered dimensions must match between src and dst
+            if src_rank -1 != dst_rank -1 { /* Error: mismatched non-scatter ranks */ }
+
+
+            // --- Prepare Layout Info for Push Constants ---
+            let mut src_shape_arr = [1u32; MAX_RANK]; let mut src_stride_arr = [1u32; MAX_RANK];
+            let mut ids_stride_arr = [1u32; MAX_RANK]; // ids_shape is same as src_shape
+            let mut dst_shape_arr = [1u32; MAX_RANK]; let mut dst_stride_arr = [1u32; MAX_RANK];
+
+            for i in 0..src_rank {
+                src_shape_arr[i] = src_layout.shape().dims()[i] as u32;
+                src_stride_arr[i] = src_layout.stride()[i] as u32;
+                // ids_shape_arr[i] = ids_layout.shape().dims()[i] as u32; // Same as src_shape
+                ids_stride_arr[i] = ids_layout.stride()[i] as u32;
+            }
+            for i in 0..dst_rank {
+                dst_shape_arr[i] = layout.shape().dims()[i] as u32;
+                dst_stride_arr[i] = layout.stride()[i] as u32;
+            }
+
+            let src_base = src_layout.start_offset() as u32;
+            let ids_base = ids_layout.start_offset() as u32;
+            let dst_base = layout.start_offset() as u32;
+
+            // --- Calculate Metal-like parameters ---
+            // selected_dim is for Dst. Assume corresponding dim in Src/Ids is also selected_dim.
+            let src_selected_dim_size = src_shape_arr[dim];
+            let dst_selected_dim_size = dst_shape_arr[dim];
+
+            let mut left_size = 1u32;
+            for i in 0..dim {
+                left_size *= dst_shape_arr[i]; // Product of Dst dimensions to the left
+            }
+
+            let mut right_size = 1u32;
+            for i in (dim + 1)..dst_rank {
+                right_size *= dst_shape_arr[i]; // Product of Dst dimensions to the right
+            }
+
+            let num_planes = left_size * right_size;
+            if num_planes == 0 && src_selected_dim_size > 0 { /* Potentially valid if output is scalar along non-scatter dims */ }
+            else if num_planes == 0 && src_selected_dim_size == 0 { return Ok(()); }
+
 
             let push_constants = ScatterSetPushConstants {
-                total_src_elems,
-                rank: rank as u32,
-                in_base,
-                out_base,
-                input_strides,
-                output_strides,
-                selected_dim: dim as u32,
+                src_base, src_rank: src_rank as u32, src_shape: src_shape_arr, src_stride: src_stride_arr,
+                ids_base, ids_stride: ids_stride_arr,
+                dst_base, dst_rank: dst_rank as u32, dst_shape: dst_shape_arr, dst_stride: dst_stride_arr,
+                left_size, src_selected_dim_size, right_size, dst_selected_dim_size,
+                sel_dim: dim as u32,
+                num_planes,
             };
 
             self.pending_future.sync_if_needed()?;
@@ -825,9 +870,9 @@ impl VulkanStorage {
                 pipeline,
                 vec![src_buf, idx_buf],
                 vec![dst_buf],
-                [total_src_elems, 1, 1],
+                [num_planes, 1, 1],
                 push_constants,
-                false,
+                true,
             )?;
         }
         Ok(())
@@ -3555,23 +3600,11 @@ impl BackendStorage for VulkanStorage {
             .load_pipeline(
                 self.device().device(),
                 &key,
-                Some(&[(
-                    "FLOAT32_ATOMIC_ADD",
-                    if self
-                        .device
-                        .device()
-                        .enabled_features()
-                        .shader_buffer_float32_atomic_add
-                    {
-                        "1"
-                    } else {
-                        "0"
-                    },
-                )]),
+                None,
             )
             .map_err(VulkanError::from)?;
 
-        self.scatter_set_op_impl(layout, index, src, src_layout, &pipeline, dim)
+        self.scatter_set_op_impl(layout, index, idx_layout, src, src_layout, &pipeline, dim)
     }
 
     fn scatter_add_set(
