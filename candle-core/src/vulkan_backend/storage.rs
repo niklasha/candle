@@ -2663,6 +2663,7 @@ impl VulkanStorage {
     pub fn rope_op_impl(
         &self,
         layout: &Layout,
+        stride_b: usize,
         cos: &Self,
         sin: &Self,
         pipeline: &Arc<ComputePipeline>,
@@ -2673,6 +2674,7 @@ impl VulkanStorage {
             shape: [u32; 4],
             strides: [u32; 4],
             base: u32,
+            stride_b: u32, // cosine/sine batch stride when using 3D tables
         }
 
         let input_buf = (*self.buffer)
@@ -2720,6 +2722,7 @@ impl VulkanStorage {
             shape,
             strides,
             base,
+            stride_b: stride_b as u32,
         };
 
         let total_elems = layout.shape().elem_count() as u32;
@@ -2742,6 +2745,7 @@ impl VulkanStorage {
     pub fn rope_i_op_impl(
         &self,
         layout: &Layout,
+        stride_b: usize,
         cos: &VulkanStorage,
         sin: &VulkanStorage,
         pipeline: &Arc<ComputePipeline>,
@@ -2752,6 +2756,7 @@ impl VulkanStorage {
             shape: [u32; 4],
             strides: [u32; 4],
             base: u32,
+            stride_b: u32, // cosine/sine batch stride when using 3D tables
         }
 
         // Retrieve input buffers.
@@ -2787,6 +2792,7 @@ impl VulkanStorage {
             shape,
             strides,
             base,
+            stride_b: stride_b as u32,
         };
 
         // Allocate output storage with the same shape and data type.

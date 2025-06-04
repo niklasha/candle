@@ -14,6 +14,7 @@ layout(push_constant) uniform PushConstants {
     // strides for the input tensor.
     uvec4 strides;
     uint base;
+    uint stride_b; // cosine/sine batch stride when using 3D tables
 } pc;
 
 layout(set = 0, binding = 0) readonly buffer InputData {
@@ -37,7 +38,7 @@ void main() {
     uint half_dim = pc.shape.w >> 1;  // D/2
     uint total_pairs = pc.shape.x * pc.shape.y * pc.shape.z * half_dim;
     uint gid = global_linear_id();
-    if(gid >= total_pairs) return;
+    if (gid >= total_pairs) return;
 
     // Decompose gid into (b, h, t, pair)
     uint pair = gid % half_dim;
@@ -58,6 +59,11 @@ void main() {
     // For a given sequence t, there are half as many lookup entries as D.
     // cs_index = t * (D/2) + pair.
     uint cs_index = t * half_dim + pair;
+    if (pc.stride_b > 0) {
+        uint b_idx = (2 * gid) / pc.stride_b;
+        cs_index += b_idx * half_dim * pc.shape.z;
+    }
+    
     float c = cos[cs_index];
     float s_val = sin[cs_index];
 

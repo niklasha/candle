@@ -11,6 +11,7 @@ layout(push_constant) uniform PushConstants {
     uvec4 shape;
     uvec4 strides;
     uint base;
+    uint stride_b; // cosine/sine batch stride when using 3D tables
 } pc;
 
 layout(set = 0, binding = 0) readonly buffer InputData { INNER_TYPE input_data[]; };
@@ -34,11 +35,13 @@ void main() {
     uint bsz  = gid / (pc.shape.w * pc.shape.z * pc.shape.y);
     #if THD
     // Layout: (b, s, h, d)
+    uint n_seq = pc.shape.y;
     uint head = (gid / pc.shape.w) % pc.shape.z;
     uint seq  = (gid / (pc.shape.w * pc.shape.z)) % pc.shape.y;
     uint offset = bsz * pc.strides.x + seq * pc.strides.y + head * pc.strides.z + dim * pc.strides.w;
     #else
     // Layout: (b, h, s, d)
+    uint n_seq = pc.shape.z;
     uint seq  = (gid / pc.shape.w) % pc.shape.z;
     uint head = (gid / (pc.shape.w * pc.shape.z)) % pc.shape.y;
     uint offset = bsz * pc.strides.x + head * pc.strides.y + seq * pc.strides.z + dim * pc.strides.w;
@@ -48,13 +51,16 @@ void main() {
 
     uint half_dim = pc.shape.w / 2;
     uint idx = seq * half_dim + dim % half_dim;
+    if (pc.stride_b != 0u) {
+        idx += bsz * half_dim * n_seq;
+    }
 
     INNER_TYPE c = cos[idx];
     INNER_TYPE s = sin[idx];
 
     INNER_TYPE val2 = (dim < half_dim)
-    ? CAST_IN(input_data[offset + half_dim * pc.strides.w])
-    : CAST_IN(input_data[offset - half_dim * pc.strides.w]);
+            ? CAST_IN(input_data[pc.base + offset + half_dim * pc.strides.w])
+            : CAST_IN(input_data[pc.base + offset - half_dim * pc.strides.w]);
 
     INNER_TYPE val_out = (dim < half_dim) ? val * c - val2 * s : val * c + val2 * s;
 

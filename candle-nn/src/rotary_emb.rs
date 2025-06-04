@@ -230,11 +230,25 @@ impl candle::CustomOp3 for RotaryEmbI {
         src: &candle::VulkanStorage,
         l_src: &Layout,
         cos: &candle::VulkanStorage,
-        _l_cos: &Layout,
+        l_cos: &Layout,
         sin: &candle::VulkanStorage,
-        _l_sin: &Layout,
+        l_sin: &Layout,
     ) -> Result<(candle::VulkanStorage, Shape)> {
         let dtype = src.dtype();
+        if cos.dtype() != dtype || sin.dtype() != dtype {
+            candle::bail!(
+                "dtype mismatch in rope {:?} {:?} {:?}",
+                dtype,
+                cos.dtype(),
+                sin.dtype()
+            )
+        }
+        let (b, h, t, d) = l_src.shape().dims4()?;
+        let stride_b = if l_cos.dims().len() == 3 && l_sin.dims().len() == 3 {
+            h * t * d
+        } else {
+            0usize
+        };
         let suffix = match dtype {
             DType::F32 => "f32",
             DType::F16 => "f16",
@@ -249,7 +263,7 @@ impl candle::CustomOp3 for RotaryEmbI {
             .load_pipeline(device.device(), kernel, None)
             .map_err(candle::Error::wrap)?;
 
-        let out = src.rope_i_op_impl(l_src, cos, sin, &pipeline)?;
+        let out = src.rope_i_op_impl(l_src, stride_b, cos, sin, &pipeline)?;
         Ok((out, l_src.shape().clone()))
     }
 }
@@ -542,11 +556,25 @@ impl candle::CustomOp3 for RotaryEmb {
         src: &candle::VulkanStorage,
         l_src: &Layout,
         cos: &candle::VulkanStorage,
-        _l_cos: &Layout,
+        l_cos: &Layout,
         sin: &candle::VulkanStorage,
-        _l_sin: &Layout,
+        l_sin: &Layout,
     ) -> Result<(candle::VulkanStorage, Shape)> {
         let dtype = src.dtype();
+        if cos.dtype() != dtype || sin.dtype() != dtype {
+            candle::bail!(
+                "dtype mismatch in rope {:?} {:?} {:?}",
+                dtype,
+                cos.dtype(),
+                sin.dtype()
+            )
+        }
+        let (b, h, t, d) = l_src.shape().dims4()?;
+        let stride_b = if l_cos.dims().len() == 3 && l_sin.dims().len() == 3 {
+            h * t * d
+        } else {
+            0usize
+        };
         let suffix = match dtype {
             DType::F32 => "f32",
             DType::F16 => "f16",
@@ -561,7 +589,7 @@ impl candle::CustomOp3 for RotaryEmb {
             .load_pipeline(device.device(), kernel, None)
             .map_err(candle::Error::wrap)?;
 
-        let out = src.rope_op_impl(l_src, cos, sin, &pipeline)?;
+        let out = src.rope_op_impl(l_src, stride_b, cos, sin, &pipeline)?;
         Ok((out, l_src.shape().clone()))
     }
 }
@@ -841,11 +869,25 @@ impl candle::CustomOp3 for RotaryEmbThd {
         src: &candle::VulkanStorage,
         l_src: &Layout,
         cos: &candle::VulkanStorage,
-        _l_cos: &Layout,
+        l_cos: &Layout,
         sin: &candle::VulkanStorage,
-        _l_sin: &Layout,
+        l_sin: &Layout,
     ) -> Result<(candle::VulkanStorage, Shape)> {
         let dtype = src.dtype();
+        if cos.dtype() != dtype || sin.dtype() != dtype {
+            candle::bail!(
+                "dtype mismatch in rope {:?} {:?} {:?}",
+                dtype,
+                cos.dtype(),
+                sin.dtype()
+            )
+        }
+        let (b, t, h, d) = l_src.shape().dims4()?;
+        let stride_b = if l_cos.dims().len() == 3 && l_sin.dims().len() == 3 {
+            h * t * d
+        } else {
+            0usize
+        };
         let suffix = match dtype {
             DType::F32 => "f32",
             DType::F16 => "f16",
@@ -860,7 +902,7 @@ impl candle::CustomOp3 for RotaryEmbThd {
             .load_pipeline(device.device(), kernel, None)
             .map_err(candle::Error::wrap)?;
 
-        let out = src.rope_op_impl(l_src, cos, sin, &pipeline)?;
+        let out = src.rope_op_impl(l_src, stride_b, cos, sin, &pipeline)?;
         Ok((out, l_src.shape().clone()))
     }
 }
