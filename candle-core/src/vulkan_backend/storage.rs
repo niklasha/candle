@@ -1215,7 +1215,6 @@ impl VulkanStorage {
             // --- Layout and Element Count ---
             let view_shape = layout.shape();
             let rank = view_shape.rank();
-            if rank == 0 { return Ok(()); } // Cannot set 0-rank tensor elements this way
             if rank > MAX_RANK {
                 return Err(VulkanError::Message(format!(
                     "const_set: Vulkan backend only supports rank up to {}, got {}",
@@ -1276,7 +1275,7 @@ impl VulkanStorage {
             }
 
             let push_constants = ConstSetPushConstants {
-                rank: rank as u32,
+                rank: if rank == 0 { 1 } else { rank as u32 },
                 base,
                 shape: shape_arr,
                 stride: stride_arr,
@@ -1288,6 +1287,7 @@ impl VulkanStorage {
             // --- Execute Kernel ---
             // 'self' is the output buffer being modified.
             // Its previous future must be waited on.
+            self.pending_future.sync_if_needed()?;
             self.execute_compute_kernel(
                 pipeline,
                 vec![],         // Dependency: previous state of self // XXX correct?
