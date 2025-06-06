@@ -179,17 +179,25 @@ impl Kernels {
 
         // --- CAST KERNELS ---
         {
-            let (name, config) = register_kernel!("cast_f32_f16", "src/cast.comp",
-                ("SRC_TYPE", "float"),
-                ("DST_TYPE", "float16_t"),
+            let (name, config) = register_kernel!("cast_f16_f32", "src/cast.comp",
+                ("SRC_TYPE", "float16_t"),
+                ("DST_TYPE", "float"),
                 ("NEED_UINT_CAST", "0"),
                 ("SRC_BF16", "0"),
                 ("DST_BF16", "0")
             );
             configs.insert(name, config);
-            let (name, config) = register_kernel!("cast_f16_f32", "src/cast.comp",
+            let (name, config) = register_kernel!("cast_f16_u8", "src/cast.comp",
                 ("SRC_TYPE", "float16_t"),
-                ("DST_TYPE", "float"),
+                ("DST_TYPE", "uint8_t"),
+                ("NEED_UINT_CAST", "0"),
+                ("SRC_BF16", "0"),
+                ("DST_BF16", "0")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("cast_f32_f16", "src/cast.comp",
+                ("SRC_TYPE", "float"),
+                ("DST_TYPE", "float16_t"),
                 ("NEED_UINT_CAST", "0"),
                 ("SRC_BF16", "0"),
                 ("DST_BF16", "0")
@@ -541,8 +549,16 @@ impl Kernels {
 
         // --- COPY_STRIDED_SRC KERNELS ---
         {
+            let (name, config) = register_kernel!("copy_strided_src_f16", "src/copy_strided_src.comp",
+                ("TYPE", "float16_t")
+            );
+            configs.insert(name, config);
             let (name, config) = register_kernel!("copy_strided_src_f32", "src/copy_strided_src.comp",
                 ("TYPE", "float")
+            );
+            configs.insert(name, config);
+            let (name, config) = register_kernel!("copy_strided_src_u8", "src/copy_strided_src.comp",
+                ("TYPE", "uint8_t")
             );
             configs.insert(name, config);
             let (name, config) = register_kernel!("copy_strided_src_u32", "src/copy_strided_src.comp",
@@ -555,10 +571,6 @@ impl Kernels {
             configs.insert(name, config);
             let (name, config) = register_kernel!("copy_strided_src_bf16", "src/copy_strided_src.comp",
                 ("TYPE", "uint16_t")
-            );
-            configs.insert(name, config);
-            let (name, config) = register_kernel!("copy_strided_src_f16", "src/copy_strided_src.comp",
-                ("TYPE", "float16_t")
             );
             configs.insert(name, config);
         }
@@ -885,17 +897,22 @@ impl Kernels {
 
             // --- CONV2D KERNELS ---
             {
+                let (name, config) = register_kernel!("conv2d_f16", "src/conv2d.comp",
+                    ("INNER_TYPE", "float16_t"),
+                    ("OUTER_TYPE", "float16_t"),
+                    ("BF16", "0")
+                );
+                configs.insert(name, config);
                 let (name, config) = register_kernel!("conv2d_f32", "src/conv2d.comp",
                     ("INNER_TYPE", "float"),
                     ("OUTER_TYPE", "float"),
                     ("BF16", "0")
                 );
                 configs.insert(name, config);
-                // Add BF16, F16 variants if needed...
-                // let (name, config) = register_kernel!("conv2d_bf16", "src/conv2d.comp",
-                //    ("INNER_TYPE", "float"), ("OUTER_TYPE", "uint16_t"), ("BF16", "1")
-                // );
-                // configs.insert(name, config);
+                let (name, config) = register_kernel!("conv2d_bf16", "src/conv2d.comp",
+                    ("INNER_TYPE", "float"), ("OUTER_TYPE", "uint16_t"), ("BF16", "1")
+                );
+                configs.insert(name, config);
             }
 
             // --- CONV_TRANSPOSE2D KERNELS ---

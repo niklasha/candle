@@ -3103,6 +3103,7 @@ impl BackendStorage for VulkanStorage {
 
     fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
         let suffix = match self.dtype {
+            DType::F16 => "f16",
             DType::F32 => "f32",
             DType::BF16 => "bf16",
             DType::I64 => "i64",
@@ -3214,17 +3215,18 @@ impl BackendStorage for VulkanStorage {
             Ok(self.clone())
         } else {
             let kernel = match (self.dtype, dtype) {
-                (DType::F32, DType::F16) => "cast_f32_f16",
                 (DType::F16, DType::F32) => "cast_f16_f32",
-                (DType::U32, DType::F32) => "cast_u32_f32",
-                (DType::U32, DType::U8) => "cast_u32_u8",
-                (DType::U8, DType::F32) => "cast_u8_f32",
-                (DType::BF16, DType::F32) => "cast_bf16_f32",
+                (DType::F16, DType::U8) => "cast_f16_u8",
+                (DType::F32, DType::F16) => "cast_f32_f16",
                 (DType::F32, DType::BF16) => "cast_f32_bf16",
-                (DType::BF16, DType::U32) => "cast_bf16_u32",
+                (DType::U32, DType::F32) => "cast_u32_f32",
                 (DType::U32, DType::BF16) => "cast_u32_bf16",
-                (DType::BF16, DType::F16) => "cast_bf16_f16",
+                (DType::U32, DType::U8) => "cast_u32_u8",
                 (DType::U32, DType::I64) => "cast_u32_i64",
+                (DType::U8, DType::F32) => "cast_u8_f32",
+                (DType::BF16, DType::F16) => "cast_bf16_f16",
+                (DType::BF16, DType::F32) => "cast_bf16_f32",
+                (DType::BF16, DType::U32) => "cast_bf16_u32",
                 (DType::I64, DType::U32) => "cast_i64_u32",
                 _ => todo!("Unsupported dtype combo {:?} {:?}", self.dtype, dtype),
             };
@@ -3397,9 +3399,9 @@ impl BackendStorage for VulkanStorage {
         if self.dtype != kernel.dtype { /* ... error ... */ }
         let suffix = match self.dtype {
             // Determine suffix based on dtype
+            DType::F16 => "f16",
             DType::F32 => "f32",
             DType::BF16 => "bf16",
-            // DType::F16 => "f16",
             _ => crate::bail!("Vulkan conv2d unsupported dtype {:?}", self.dtype),
         };
         let key = format!("conv2d_{}", suffix);
@@ -3786,11 +3788,12 @@ impl BackendStorage for VulkanStorage {
 
     fn copy_strided_src(&self, dst: &mut Self, dst_offset: usize, layout: &Layout) -> Result<()> {
         let suffix = match self.dtype {
+            DType::F16 => "f16",
             DType::F32 => "f32",
             DType::U32 => "u32",
+            DType::U8=> "u8",
             DType::I64 => "i64",
             DType::BF16 => "bf16",
-            DType::F16 => "f16",
             _ => todo!("Unsupported dtype {:?}", self.dtype),
         };
         let key = format!("copy_strided_src_{}", suffix);
