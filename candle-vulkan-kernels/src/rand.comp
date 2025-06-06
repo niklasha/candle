@@ -1,80 +1,100 @@
 #version 450
 
-#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+// ----------------------------------------------
+// Compute Shader: SplitMix32-based RNG (100% 32-bit)
+// ----------------------------------------------
+// • Each thread’s 32-bit state = globalSeed + idx.
+// • Even if globalSeed = 0, splitmix32(0) advances state away from zero.
+// • Bounds-checks against elementCount so no out-of-range writes.
+// • Supports uniform [low, high) or Gaussian (mean, stddev) modes.
+// • Each invocation generates exactly one float (two RNG calls for Gaussian).
+// ----------------------------------------------
 
+// Workgroup configuration: 256 threads per workgroup in X dimension
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-#include "common.comp"
+#include "common.comp" 
 
+// Output buffer: one float per element
 layout(set = 0, binding = 0) buffer OutputBuffer {
-    float values[];
+    float values[];  // values[0..elementCount-1]
 };
 
+// Push constants: elementCount, 32-bit globalSeed, plus two floats.
+// Total size = 4 + 4 + 4 + 4 = 16 bytes.
 layout(push_constant) uniform RandPushConstants {
-    uint64_t globalSeed;
+    uint  elementCount;  // Number of floats to generate
+    uint  globalSeed;    // 32-bit seed (can be zero)
 #ifdef UNIFORM
-    float low ;
-    float high;
+    float low;           // Uniform distribution lower bound
+    float high;          // Uniform distribution upper bound
 #else
-    float mean;
-    float stddev;
+    float mean;          // Gaussian distribution mean
+    float stddev;        // Gaussian distribution standard deviation
 #endif
 } pc;
 
-// PCG32 constants for 64-bit state
-const uint64_t PCG_MULTIPLIER = 6364136223846793005ul;
-const uint64_t PCG_INCREMENT  = 1442695040888963407ul;
-
-// PCG32 output function (PCG-XSH-RR):
-// It updates the state and returns a 32-bit random number.
-uint pcg32_random(inout uint64_t state) {
-    uint64_t oldState = state;
-    state = oldState * PCG_MULTIPLIER + PCG_INCREMENT;
-    uint xorshifted = uint(((oldState >> 18u) ^ oldState) >> 27u);
-    uint rot = uint(oldState >> 59u);
-    return (xorshifted >> rot) | (xorshifted << ((-rot) & 31));
+// --------------------------------------------------------------
+// splitmix32: 32-bit pseudo-random generator that always advances.
+// Takes an input x, adds a constant, applies bit-mixing, and returns.
+// Even if x == 0, it will produce a nonzero result on first call.
+// --------------------------------------------------------------
+uint splitmix32(inout uint x) {
+    // Add golden ratio constant (32-bit version) to ensure x moves away from 0
+    x += 0x9E3779B9u;
+    uint z = x;
+    // First mix step (similar to MurmurHash3’s fmix):
+    z = (z ^ (z >> 15)) * 0x85EBCA6Bu;
+    // Second mix step:
+    z = (z ^ (z >> 13)) * 0xC2B2AE35u;
+    // Final avalanche:
+    return z ^ (z >> 16);
 }
 
-// Jump-ahead function to advance the state by 'delta' steps.
-uint64_t pcg32_advance(uint64_t state, uint64_t delta) {
-    uint64_t acc_mult = 1ul;
-    uint64_t acc_plus = 0ul;
-    uint64_t cur_mult = PCG_MULTIPLIER;
-    uint64_t cur_plus = PCG_INCREMENT;
-    while(delta > 0u) {
-        if ((delta & 1u) != 0u) {
-            acc_mult *= cur_mult;
-            acc_plus = acc_plus * cur_mult + cur_plus;
-        }
-        cur_plus = (cur_mult + 1ul) * cur_plus;
-    cur_mult *= cur_mult;
-    delta >>= 1u;
-    }
-    return acc_mult * state + acc_plus;
+// Convert a 32-bit unsigned integer in [0..2^32-1] to a float in [0,1).
+float toUniformFloat32(uint v) {
+    // Divide by 2^32 to get a value in [0,1)
+    return float(v) * (1.0 / 4294967296.0);
 }
 
 void main() {
+    // Compute the flat index of this invocation
     uint idx = global_linear_id();
 
-    // Each thread computes its own local RNG state by jumping ahead by its global index.
-    uint64_t localState = pcg32_advance(pc.globalSeed, uint64_t(idx));
+    // Bounds-check: if idx is outside [0..elementCount-1], exit immediately
+    if (idx >= pc.elementCount) {
+        return;
+    }
 
-    // Generate a random 32-bit value and scale the output to [0,1)
-    uint rand_val = pcg32_random(localState);
-    float r = float(rand_val) / 4294967296.0;
+    // Initialize per-thread 32-bit state as (globalSeed + idx)
+    // If globalSeed == 0 and idx == 0, state == 0,
+    // but splitmix32(0) advances to a nonzero value on first call.
+    uint state = pc.globalSeed + idx;
+
+    // Generate the first 32-bit random value and convert to float in [0,1)
+    uint raw1 = splitmix32(state);
+    float u1 = toUniformFloat32(raw1);
 
     #ifdef UNIFORM
-    values[idx] = pc.low + r * (pc.high - pc.low);
+    // If UNIFORM is defined, map u1 in [0,1) to [low, high)
+    // so values[idx] = low + u1 * (high - low)
+    values[idx] = pc.low + u1 * (pc.high - pc.low);
     #else
-    // For a Gaussian distribution, we need two independent uniform random numbers.
-    uint rand_val2 = pcg32_random(localState);
-    float r2 = float(rand_val2) / 4294967296.0;
-    // Avoid log(0)
-    r = max(r, 1e-6);
-    // Box-Muller transform:
+    // Otherwise, use Box–Muller transform for Gaussian distribution
+    // Generate a second independent uniform value
+    uint raw2 = splitmix32(state);
+    float u2 = toUniformFloat32(raw2);
+
+    // Avoid log(0) by clamping u1 very slightly
+    u1 = max(u1, 1e-6);
+
+    // Standard Box–Muller: generate a Gaussian with mean=0, stddev=1
     const float PI = 3.14159265358979323846;
-    float theta = 2.0 * PI * r2;
-    float gaussian = sqrt(-2.0 * log(r)) * cos(theta);
-    values[idx] = pc.mean + gaussian * pc.stddev;
+    float theta = 2.0 * PI * u2;
+    float radius = sqrt(-2.0 * log(u1));
+    float gauss = radius * cos(theta);
+
+    // Scale and shift by mean and standard deviation
+    values[idx] = pc.mean + gauss * pc.stddev;
     #endif
 }

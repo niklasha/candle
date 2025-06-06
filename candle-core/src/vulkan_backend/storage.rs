@@ -2829,9 +2829,10 @@ impl VulkanStorage {
         arg1: f64, // high / stddev
     ) -> Result<Self> {
         #[repr(C)]
-        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
         struct PushConstants {
-            seed: u64,
+            elem_count: u32,
+            seed: u32,
             arg0: f32,
             arg1: f32,
         }
@@ -2839,24 +2840,24 @@ impl VulkanStorage {
         if let Some(buffer) = (*self.buffer).clone() {
             let elem_count = shape.elem_count();
             let device = self.device();
-            let new_storage = unsafe { device.alloc_uninit(shape, target_dtype)? };
 
-            let arg0 = arg0 as f32;
-            let arg1 = arg1 as f32;
-
-            let push_constants = PushConstants { seed, arg0, arg1 };
-            new_storage.execute_compute_kernel(
+            let push_constants = PushConstants {
+                elem_count: elem_count as u32,
+                seed: seed as u32,
+                arg0: arg0 as f32,
+                arg1: arg1 as f32,
+            };
+            self.execute_compute_kernel(
                 pipeline,
                 vec![],
-                vec![(*new_storage.buffer).clone().unwrap()], // XXX
+                vec![(*self.buffer).clone().unwrap()], // XXX
                 [elem_count as u32, 1, 1],
                 push_constants,
                 false,
             )?;
-            self.device
-                .set_seed(pcg32_advance(seed, elem_count as u64))?;
+            self.device.set_seed(seed + elem_count as u64)?;
 
-            Ok(new_storage)
+            Ok(self.clone())
         } else {
             // Zero-sized buffer, return zero-sized buffer
             Ok(self.clone())
@@ -3064,28 +3065,6 @@ impl VulkanStorage {
         }
         Ok(())
     }
-}
-
-// PCG32 constants for 64-bit state
-const PCG_MULTIPLIER: u64 = 6364136223846793005u64;
-const PCG_INCREMENT: u64 = 1442695040888963407u64;
-
-fn pcg32_advance(state: u64, delta: u64) -> u64 {
-    let mut acc_mult = 1u64;
-    let mut acc_plus = 0u64;
-    let mut cur_mult = PCG_MULTIPLIER;
-    let mut cur_plus = PCG_INCREMENT;
-    let mut delta = delta;
-    while delta > 0 {
-        if (delta & 1) != 0 {
-            acc_mult = acc_mult.wrapping_mul(cur_mult);
-            acc_plus = acc_plus.wrapping_mul(cur_mult).wrapping_add(cur_plus);
-        }
-        cur_plus = (cur_mult.wrapping_add(1)).wrapping_mul(cur_plus);
-        cur_mult = cur_mult.wrapping_mul(cur_mult);
-        delta >>= 1;
-    }
-    acc_mult.wrapping_mul(state).wrapping_add(acc_plus)
 }
 
 macro_rules! fail {
